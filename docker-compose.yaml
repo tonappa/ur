@@ -1,0 +1,86 @@
+services:
+  ros_dev:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile
+      args:
+        - ROS_DISTRO=${ROS_DISTRO}
+        - ROS_VERSION=${ROS_VERSION}
+        - MYUID=${MYUID}
+        - MYGID=${MYGID}
+        - WORKSPACE_NAME=${WORKSPACE_NAME}
+    image: ${IMAGE_NAME}:${ROS_DISTRO}
+
+    # --- hardware config and permissions ---
+    privileged: true
+    network_mode: host # required for ROS2 DDS discovery and robot TCP/IP communication
+    ipc: host
+
+    # real-time priority for robot control
+    cap_add:
+      - SYS_NICE
+    ulimits:
+      rtprio: 99
+      rttime: -1 # unlimited
+      memlock: 8428281856
+
+    # NVIDIA GPU passthrough (requires nvidia-container-toolkit on host)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+
+    # add container user to host hardware groups
+    group_add:
+      - "${AUDIO_GID}"
+      - "${VIDEO_GID}"
+
+    # map hardware devices
+    devices:
+      - "/dev/dri:/dev/dri"
+      - "/dev/snd:/dev/snd"
+      - "/dev/bus/usb:/dev/bus/usb"
+
+    # --- environment variables ---
+    environment:
+      - WORKSPACE_NAME=${WORKSPACE_NAME}
+      - DISPLAY=${DISPLAY}
+      - ROS_DISTRO=${ROS_DISTRO}
+      - ROS_VERSION=${ROS_VERSION}
+      - QT_X11_NO_MITSHM=1
+      - XAUTHORITY=${XAUTH}
+      - PULSE_SERVER=${PULSE_SERVER}
+      - XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}
+      - MPLCONFIGDIR=/home/ros/.matplotlib
+      # NVIDIA GPU (full capabilities: compute + graphics + display + utility) # togliere se voglio usare gpu solo x vision
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      # bash history persistence
+      - HISTFILE=/home/ros/.bash_history
+      - HISTFILESIZE=10000
+      - SAVEHIST=10000
+
+    # --- volumes and mounts ---
+    volumes:
+      # mount workspace from host (build inside container with colcon build)
+      - .:/home/ros/${WORKSPACE_NAME}
+
+      # GUI forwarding
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ${XAUTH}:${XAUTH}
+      - ${XDG_RUNTIME_DIR}/pulse/native:${XDG_RUNTIME_DIR}/pulse/native
+      - /dev/shm:/dev/shm
+
+      # bash history persistence
+      - ${BASH_HISTORY_PATH}:/home/ros/.bash_history
+
+      # VSCode integration
+      - ${VSCODE_PATH}:/home/ros/.vscode
+      - ${VSCODE_SERVER_PATH}:/home/ros/.vscode-server
+
+    # keep container alive for interactive session
+    stdin_open: true
+    tty: true
