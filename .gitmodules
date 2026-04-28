@@ -1,0 +1,12 @@
+[submodule "src/utils/src/ur_description"]
+	path = src/utils/src/ur_description
+	url = https://github.com/UniversalRobots/Universal_Robots_ROS2_Description.git
+	branch = jazzy
+[submodule "src/utils/Universal_Robots_ROS2_Description"]
+	path = src/utils/Universal_Robots_ROS2_Description
+	url = https://github.com/UniversalRobots/Universal_Robots_ROS2_Description.git
+	branch = jazzy
+[submodule "src/utils/Universal_Robots_ROS2_Driver"]
+	path = src/utils/Universal_Robots_ROS2_Driver
+	url = https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver.git
+	branch = jazzy
