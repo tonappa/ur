@@ -1,0 +1,10 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: ur_automata_description
+    relative_path: urdf/ur_automata.urdf.xacro
+  srdf:
+    relative_path: config/ur_automata.srdf
+  package_settings:
+    author_name: Do Won Park
+    author_email: do.park@iit.it
+    generated_timestamp: 1777391411

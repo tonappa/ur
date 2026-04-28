@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="ur_automata">
+
+  <xacro:arg name="name" default="ur"/>
+  <xacro:arg name="ur_type" default="ur5e"/>
+
+  <link name="world"/>
+
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+
+  <xacro:ur_robot
+    name="$(arg name)"
+    tf_prefix=""
+    parent="world"
+    joint_limits_parameters_file="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"
+    kinematics_parameters_file="$(find ur_description)/config/$(arg ur_type)/default_kinematics.yaml"
+    physical_parameters_file="$(find ur_description)/config/$(arg ur_type)/physical_parameters.yaml"
+    visual_parameters_file="$(find ur_description)/config/$(arg ur_type)/visual_parameters.yaml">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <link name="ee_automata_mesh_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://ur_automata_description/meshes/ee_automata_01_nogr.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="slate_grey">
+        <color rgba="0.44 0.50 0.56 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://ur_automata_description/meshes/ee_automata_01_nogr.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="ee_automata_mesh_fixed_joint" type="fixed">
+    <parent link="tool0"/>
+    <child link="ee_automata_mesh_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="ee_automata_link"/>
+
+  <joint name="ee_automata_fixed_joint" type="fixed">
+    <parent link="tool0"/>
+    <child link="ee_automata_link"/>
+    <origin xyz="0 0.052 0.153" rpy="0 0 0"/>
+  </joint>
+
+</robot>

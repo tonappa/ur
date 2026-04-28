@@ -55,6 +55,7 @@ RUN apt-get update && \
     rosdep update --rosdistro=${ROS_DISTRO} && \
     apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-ur \
+    ros-jazzy-ur-simulation-gz \
     ros-${ROS_DISTRO}-rviz2 \
     ros-${ROS_DISTRO}-ros-gz \
     ros-${ROS_DISTRO}-rqt-runtime-monitor \
