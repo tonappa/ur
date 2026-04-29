@@ -102,8 +102,8 @@
       <geometry>
         <mesh filename="package://ur_automata_description/meshes/ee_automata_V1.stl" scale="0.001 0.001 0.001"/>
       </geometry>
-      <material name="charcoal_grey">
-        <color rgba="0.13 0.13 0.13 1.0"/>
+      <material name="aluminum">
+        <color rgba="0.78 0.78 0.80 1.0"/>
       </material>
     </visual>
     <collision>

@@ -15,7 +15,6 @@
   <depend>moveit_msgs</depend>
   <depend>eigen</depend>
 
-  <exec_depend>ur_automata_bringup</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -7,6 +7,27 @@ planning:
   global_frame: world                  # frame in cui sono espressi gli ostacoli e il centro dello scan
   end_effector_link: ee_automata_tcp   # tip_link del kinematic chain (deve coincidere col SRDF)
   trajectory_scaling_factor: 0.1       # default conservativo per i primi test
+  home_pose_name: home                 # nome del group_state nell'SRDF usato come fallback / recovery
+  use_moveit: true                     # use moveit
+  use_scene: true                      # spawn scene with MoveIt, scene defined in ur_automata_scene pkg
+  use_rviz: true                       # launch RViz alongside MoveIt
 
 scan:
-  center: [0.0, 0.4, 0.5]   # centro del piatto cilindrico, in metri, espresso in `planning.global_frame`
+  center: [0.0, 0.4, 0.5]   # centro del supporto, in metri, nel frame `planning.global_frame`
+  radius: 0.30               # raggio della sfera di waypoint, in metri
+
+  hemisphere: upper          # upper | lower | full  (full = sup prima, poi inf)
+  direction: latitudinal     # latitudinal | longitudinal
+
+  # Banda equatoriale "vietata": il robot non può puntare in linea col supporto.
+  # L'ultimo anello/punto si ferma a (90° - equator_exclusion_deg) dal polo.
+  # Tipico: 10-15 gradi.
+  equator_exclusion_deg: 10.0 # numero decimale! dichiarato double nel codice
+
+  # latitudinale: numero di anelli tra polo ed equatore (escluso polo)
+  # longitudinale: numero di meridiani
+  num_rings: 4
+
+  # latitudinale: punti per anello
+  # longitudinale: punti lungo ogni meridiano (escluso polo)
+  points_per_ring: 8

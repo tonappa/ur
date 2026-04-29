@@ -3,23 +3,20 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 from moveit_configs_utils import MoveItConfigsBuilder
 
-
+################################## config load ##################################
 def _load_config():
-    """Legge automata_config.yaml dal share installato di ur_automata_bringup.
 
-    Nota: dopo aver modificato il YAML in src/, ricordarsi di ribuildare
-    ur_automata_bringup (i launch file leggono dal package share, non da src).
-    """
     cfg_path = os.path.join(
         get_package_share_directory("ur_automata_bringup"),
         "config",
@@ -33,7 +30,7 @@ def launch_setup(context, *args, **kwargs):
     # ur_type deve essere risolto qui (stringa) perché MoveItConfigsBuilder lo
     # passa direttamente all'xacro come mapping; LaunchConfiguration non andrebbe.
     ur_type = LaunchConfiguration("ur_type").perform(context)
-    launch_rviz = LaunchConfiguration("launch_rviz")
+    use_rviz = LaunchConfiguration("use_rviz")
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     moveit_config = (
@@ -70,7 +67,7 @@ def launch_setup(context, *args, **kwargs):
         executable="rviz2",
         name="rviz2_moveit",
         output="log",
-        condition=IfCondition(launch_rviz),
+        condition=IfCondition(use_rviz),
         arguments=["-d", rviz_config],
         parameters=[
             moveit_config.robot_description,
@@ -92,9 +89,15 @@ def launch_setup(context, *args, **kwargs):
         ),
     ]
 
-
 def generate_launch_description():
+    
     cfg = _load_config()
+
+    use_scene_val = cfg['planning']['use_scene']
+    use_scene_str_condition = "true" if use_scene_val else "false"
+
+    use_rviz_val = cfg['planning']['use_rviz']
+    use_rviz_str_condition = "true" if use_rviz_val else "false"
 
     declared_arguments = [
         DeclareLaunchArgument(
@@ -105,17 +108,32 @@ def generate_launch_description():
                         "il modello cinematico del move_group non corrisponde al TF pubblicato dal driver.",
         ),
         DeclareLaunchArgument(
-            "launch_rviz",
-            default_value="true",
-            description="Launch RViz with the MoveIt MotionPlanning panel.",
+            "use_rviz",
+            default_value=use_rviz_str_condition,
+            description="Launch RViz with the MoveIt MotionPlanning panel. Default from automata_config.yaml.",
         ),
         DeclareLaunchArgument(
             "use_sim_time",
             default_value="false",
             description="Set true only when the bringup uses a simulated clock (Gazebo).",
         ),
+        DeclareLaunchArgument(
+            "use_scene",
+            default_value=use_scene_str_condition,
+            description="Launch scene.launch.py if true. The default is read from automata_config.yaml.",
+        ),
     ]
 
+    scene_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare("ur_automata_scene"), "launch", "scene.launch.py"
+            ])
+        ),
+        condition=IfCondition(LaunchConfiguration("use_scene"))
+    )
+
     return LaunchDescription(declared_arguments + [
+        scene_launch,
         OpaqueFunction(function=launch_setup),
     ])

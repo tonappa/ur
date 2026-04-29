@@ -60,11 +60,7 @@ def generate_launch_description():
             default_value="",
             description="tf_prefix for joint and link names.",
         ),
-        DeclareLaunchArgument(
-            "launch_rviz",
-            default_value="false",
-            description="The MoveIt launch starts its own RViz.",
-        ),
+
         DeclareLaunchArgument(
             "initial_joint_controller",
             default_value="scaled_joint_trajectory_controller",
@@ -99,7 +95,7 @@ def generate_launch_description():
                 "headless_mode": LaunchConfiguration("headless_mode"),
                 "kinematics_params_file": LaunchConfiguration("kinematics_params_file"),
                 "tf_prefix": LaunchConfiguration("tf_prefix"),
-                "launch_rviz": LaunchConfiguration("launch_rviz"),
+                "launch_rviz": "false",
                 "initial_joint_controller": LaunchConfiguration("initial_joint_controller"),
                 "use_mock_hardware": "false",
                 "description_file": description_file,
