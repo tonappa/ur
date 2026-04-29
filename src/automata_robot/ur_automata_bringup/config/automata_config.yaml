@@ -1,0 +1,12 @@
+robot:
+  ip: 192.168.1.97          # UR (o URSim) IP address
+  type: ur5                 # ur3, ur3e, ur5, ur5e, ur10, ur10e, ur16e
+
+planning:
+  group: ur_manipulator
+  global_frame: world                  # frame in cui sono espressi gli ostacoli e il centro dello scan
+  end_effector_link: ee_automata_tcp   # tip_link del kinematic chain (deve coincidere col SRDF)
+  trajectory_scaling_factor: 0.1       # default conservativo per i primi test
+
+scan:
+  center: [0.0, 0.4, 0.5]   # centro del piatto cilindrico, in metri, espresso in `planning.global_frame`

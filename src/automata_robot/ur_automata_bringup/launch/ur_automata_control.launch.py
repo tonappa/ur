@@ -1,3 +1,7 @@
+import os
+import yaml
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -5,17 +9,35 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
 
+def _load_config():
+    """Legge automata_config.yaml dal share installato di ur_automata_bringup.
+
+    Nota: dopo aver modificato il YAML in src/, ricordarsi di ribuildare
+    ur_automata_bringup (i launch file leggono dal package share, non da src).
+    """
+    cfg_path = os.path.join(
+        get_package_share_directory("ur_automata_bringup"),
+        "config",
+        "automata_config.yaml",
+    )
+    with open(cfg_path, "r") as f:
+        return yaml.safe_load(f)
+
+
 def generate_launch_description():
+    cfg = _load_config()
+
     declared_arguments = [
         DeclareLaunchArgument(
             "ur_type",
-            default_value="ur5e",
-            description="UR robot model.",
+            default_value=cfg["robot"]["type"],
+            description="UR robot model. Default letto da automata_config.yaml.",
         ),
         DeclareLaunchArgument(
             "robot_ip",
-            default_value="192.168.1.97",
-            description="IP address of the UR controller (URSim or real).",
+            default_value=cfg["robot"]["ip"],
+            description="IP address of the UR controller (URSim or real). "
+                        "Default letto da automata_config.yaml.",
         ),
         DeclareLaunchArgument(
             "headless_mode",
