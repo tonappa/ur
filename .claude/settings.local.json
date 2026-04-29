@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(awk '/xacro:macro name=\"ur_robot\"/,/>/' /home/tonappa/ur/src/utils/Universal_Robots_ROS2_Description/urdf/ur_macro.xacro)",
-      "Bash(awk '/xacro:macro name=/,/>/' /home/tonappa/ur/src/utils/Universal_Robots_ROS2_Driver/ur_robot_driver/urdf/ur.ros2_control.xacro)"
+      "Bash(awk '/xacro:macro name=/,/>/' /home/tonappa/ur/src/utils/Universal_Robots_ROS2_Driver/ur_robot_driver/urdf/ur.ros2_control.xacro)",
+      "Bash(git -C /home/tonappa/ur log --oneline -10)",
+      "Bash(grep -nB2 -A30 -iE \"custom|own.+robot|tool|gripper|attach\" /home/tonappa/ur/src/utils/Universal_Robots_ROS2_Driver/ur_robot_driver/doc/installation/installation.rst)",
+      "Bash(grep -rnA5 -iE \"custom_workspace|own description|custom description|description_file\" /home/tonappa/ur/src/utils/Universal_Robots_ROS2_Driver/ur_robot_driver/doc /home/tonappa/ur/src/utils/Universal_Robots_ROS2_Driver/ur_moveit_config/doc)",
+      "Bash(grep -nA5 \"initial_positions\" /home/tonappa/ur/src/utils/Universal_Robots_ROS2_Description/urdf/inc/ur_joint_control.xacro)",
+      "Bash(grep -nA3 \"initial_positions\")"
     ]
   }
 }

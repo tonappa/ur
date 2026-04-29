@@ -41,7 +41,7 @@
   <xacro:arg name="use_mock_hardware" default="false" />
   <xacro:arg name="mock_sensor_commands" default="false" />
   <xacro:arg name="simulation_controllers" default="" />
-  <xacro:arg name="initial_positions_file" default="$(find ur_description)/config/initial_positions.yaml"/>
+  <xacro:arg name="initial_positions_file" default="$(find ur_automata_moveit_config)/config/initial_positions.yaml"/>
   <xacro:property name="initial_positions_file_prop" value="$(arg initial_positions_file)"/>
 
   <link name="world" />

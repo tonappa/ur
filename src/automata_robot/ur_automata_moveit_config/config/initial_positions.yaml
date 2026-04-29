@@ -1,9 +1,6 @@
-# Default initial positions for ur_automata's ros2_control fake system
-
-initial_positions:
-  elbow_joint: 0
-  shoulder_lift_joint: 0
-  shoulder_pan_joint: 0
-  wrist_1_joint: 0
-  wrist_2_joint: 0
-  wrist_3_joint: 0
+shoulder_pan_joint: -1.571
+shoulder_lift_joint: -0.6979
+elbow_joint: -1.571
+wrist_1_joint: -0.785
+wrist_2_joint: 1.571
+wrist_3_joint: 0.0

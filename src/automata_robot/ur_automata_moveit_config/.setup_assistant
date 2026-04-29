@@ -8,18 +8,3 @@ moveit_setup_assistant_config:
     author_name: Do Won Park
     author_email: do.park@iit.it
     generated_timestamp: 1777405919
-  control_xacro:
-    command:
-      - position
-    state:
-      - position
-      - velocity
-  modified_urdf:
-    xacros:
-      - control_xacro
-  control_xacro:
-    command:
-      - position
-    state:
-      - position
-      - velocity
