@@ -5,29 +5,33 @@
 #include <Eigen/Geometry>
 #include <geometry_msgs/msg/pose.hpp>
 
-namespace ur_automata_scan {
+// Which half of the sphere to scan
+#define HEMISPHERE_UPPER 0
+#define HEMISPHERE_LOWER 1
+#define HEMISPHERE_FULL  2
 
-enum class Hemisphere { UPPER, LOWER, FULL };
-enum class ScanDirection { LATITUDINAL, LONGITUDINAL };
+// Order in which waypoints are visited
+#define SCAN_LATITUDINAL  0   // ring by ring (horizontal circles)
+#define SCAN_LONGITUDINAL 1   // meridian by meridian (vertical slices)
 
+// All the settings for one scan
 struct ScanConfig {
-  Eigen::Vector3d center;
-  double radius;
-  Hemisphere hemisphere;
-  ScanDirection direction;
-  int num_rings;        // latitudinale: anelli (escluso polo) | longitudinale: meridiani
-  int points_per_ring;  // latitudinale: punti/anello | longitudinale: punti/meridiano (escluso polo)
-  double equator_exclusion_rad;  // banda angolare attorno all'equatore esclusa dallo scan
+  Eigen::Vector3d center;       // center of the sphere in 3D space
+  double radius;                // radius of the sphere in meters
+  int hemisphere;               // HEMISPHERE_UPPER / LOWER / FULL
+  int direction;                // SCAN_LATITUDINAL or SCAN_LONGITUDINAL
+
+  // latitudinal scan parameters
+  int num_rings;                // number of rings between pole and equator
+  int points_per_ring;          // points per ring
+
+  // longitudinal scan parameters
+  int num_arc;                  // number of meridians
+  int points_per_arc;           // points per meridian (excluding pole)
+
+  double equator_exclusion_rad; // angle (radians) to skip near the equator
 };
 
-/// Genera la lista ordinata di pose per lo scan sferico.
-///
-/// Orientamento: l'asse Y di ee_automata_tcp punta verso il centro della sfera
-/// in ogni waypoint (asse ottico della camera = Y del TCP).
-///
-/// Ordine:
-///   - Il primo punto di ogni emisfero è sempre il polo.
-///   - Hemisphere::FULL → emisfero superiore completo, poi inferiore.
+// Generates the list of poses the robot should visit during the scan.
+// At every pose the end-effector Y-axis points toward the sphere center.
 std::vector<geometry_msgs::msg::Pose> generate_waypoints(const ScanConfig & cfg);
-
-}  // namespace ur_automata_scan

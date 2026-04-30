@@ -29,6 +29,7 @@ def generate_launch_description():
         executable="scan_executor_node",
         name="scan_executor_node",
         output="screen",
+        emulate_tty=True,
         parameters=[{
             # Parametri di planning (da sezione `planning`)
             "global_frame":              p["global_frame"],
@@ -43,7 +44,11 @@ def generate_launch_description():
             "scan_direction":              s["direction"],
             "scan_num_rings":              s["num_rings"],
             "scan_points_per_ring":        s["points_per_ring"],
+            "scan_num_arc":                s["num_arc"],
+            "scan_points_per_arc":         s["points_per_arc"],
             "scan_equator_exclusion_deg":  s["equator_exclusion_deg"],
+            "scan_lock_roll":              s["lock_roll"],
+            "scan_planner":                s["planner"],
         }],
     )
 

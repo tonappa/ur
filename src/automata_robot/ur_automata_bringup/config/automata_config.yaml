@@ -13,21 +13,36 @@ planning:
   use_rviz: true                       # launch RViz alongside MoveIt
 
 scan:
-  center: [0.0, 0.4, 0.5]   # centro del supporto, in metri, nel frame `planning.global_frame`
+  center: [0.133, 0.40, 0.5]   # centro del supporto, in metri, nel frame `planning.global_frame`
   radius: 0.30               # raggio della sfera di waypoint, in metri
-
   hemisphere: upper          # upper | lower | full  (full = sup prima, poi inf)
-  direction: latitudinal     # latitudinal | longitudinal
+  direction: longitudinal   # latitudinal | longitudinal
 
   # Banda equatoriale "vietata": il robot non può puntare in linea col supporto.
   # L'ultimo anello/punto si ferma a (90° - equator_exclusion_deg) dal polo.
   # Tipico: 10-15 gradi.
-  equator_exclusion_deg: 10.0 # numero decimale! dichiarato double nel codice
+  equator_exclusion_deg: 15.0 # numero decimale! dichiarato double nel codice
 
-  # latitudinale: numero di anelli tra polo ed equatore (escluso polo)
-  # longitudinale: numero di meridiani
-  num_rings: 4
+  # --- parametri LATITUDINAL (ring-by-ring) ---
+  # numero di anelli tra polo ed equatore (escluso polo)
+  num_rings: 3
+  # punti per ogni anello
+  points_per_ring: 6
 
-  # latitudinale: punti per anello
-  # longitudinale: punti lungo ogni meridiano (escluso polo)
-  points_per_ring: 8
+  # --- parametri LONGITUDINAL (meridian-by-meridian) ---
+  # numero di meridiani
+  num_arc: 5
+  # punti per ogni meridiano (escluso polo)
+  points_per_arc: 5
+
+  # true:  X del TCP forzato orizzontale (no roll attorno a Y)
+  # false: roll libero, MoveIt sceglie la posa più comoda via OrientationConstraint
+  lock_roll: true
+
+  # Pipeline di motion planning:
+  #   ompl     → OMPL/RRTConnect (default storico, sampling-based, supporta path constraints)
+  #   pilz_ptp → Pilz Industrial Motion Planner, point-to-point in joint-space (rapido, deterministico, no constraints)
+  #   pilz_lin → Pilz LIN, lineare in cartesiano (rischio singolarità)
+  # NB: pilz_* IGNORA il path constraint usato da lock_roll=false.
+  # NB: per usare pilz_* serve `pilz_industrial_motion_planner_planning.yaml` in ur_automata_moveit_config/config.
+  planner: ompl

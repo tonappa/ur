@@ -10,6 +10,8 @@ find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
+find_package(ament_index_cpp REQUIRED)
+find_package(geometric_shapes REQUIRED)
 find_package(Eigen3 REQUIRED)
 
 # Libreria che costruisce la PlanningScene (riusabile da altri nodi).
@@ -24,6 +26,8 @@ ament_target_dependencies(scan_scene_builder
   geometry_msgs
   shape_msgs
   moveit_msgs
+  geometric_shapes
+  ament_index_cpp
 )
 
 # Eseguibile del nodo che applica la scena via /apply_planning_scene.
@@ -49,12 +53,12 @@ install(DIRECTORY include/
   DESTINATION include
 )
 
-install(DIRECTORY launch
+install(DIRECTORY meshes launch
   DESTINATION share/${PROJECT_NAME}
 )
 
 ament_export_include_directories(include)
 ament_export_libraries(scan_scene_builder)
-ament_export_dependencies(rclcpp geometry_msgs shape_msgs moveit_msgs)
+ament_export_dependencies(rclcpp geometry_msgs shape_msgs moveit_msgs geometric_shapes ament_index_cpp)
 
 ament_package()

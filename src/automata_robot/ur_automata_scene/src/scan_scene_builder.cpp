@@ -1,22 +1,68 @@
 #include "ur_automata_scene/scan_scene_builder.hpp"
 
+#include <cmath>
 #include <vector>
 
 #include <Eigen/Geometry>
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include <geometric_shapes/mesh_operations.h>
+#include <geometric_shapes/shape_operations.h>
+#include <geometric_shapes/shapes.h>
 
-#include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/pose.hpp>
-#include <geometry_msgs/msg/quaternion.hpp>
 #include <moveit_msgs/msg/collision_object.hpp>
-#include <moveit_msgs/msg/planning_scene_world.hpp>
+#include <moveit_msgs/msg/object_color.hpp>
+#include <moveit_msgs/msg/planning_scene.hpp>
+#include <shape_msgs/msg/mesh.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 
 namespace ur_automata_scene {
 
 namespace {
 
-geometry_msgs::msg::Quaternion identity_quaternion()
-{
+// ------------------------------------------------------------------
+// Build a quaternion that rotates the Z axis (0,0,1) so that it points
+// from p1 toward p2. We use this to orient cylinder primitives, which
+// in MoveIt are aligned along their local Z axis.
+// ------------------------------------------------------------------
+static geometry_msgs::msg::Quaternion rotation_z_to(const Eigen::Vector3d &p1,
+                                                    const Eigen::Vector3d &p2) {
+  Eigen::Vector3d direction = (p2 - p1).normalized();
+  Eigen::Vector3d z_axis(0.0, 0.0, 1.0);
+  double cos_angle = z_axis.dot(direction);
+
+  geometry_msgs::msg::Quaternion result;
+  if (cos_angle > 1.0 - 1e-9) {
+    result.x = 0.0;
+    result.y = 0.0;
+    result.z = 0.0;
+    result.w = 1.0;
+    return result;
+  }
+  if (cos_angle < -1.0 + 1e-9) {
+    result.x = 1.0;
+    result.y = 0.0;
+    result.z = 0.0;
+    result.w = 0.0;
+    return result;
+  }
+
+  Eigen::Vector3d axis = z_axis.cross(direction).normalized();
+  double angle = std::acos(cos_angle);
+  Eigen::AngleAxisd axis_angle(angle, axis);
+  Eigen::Quaterniond q(axis_angle);
+
+  result.x = q.x();
+  result.y = q.y();
+  result.z = q.z();
+  result.w = q.w();
+  return result;
+}
+
+// ------------------------------------------------------------------
+// Identity quaternion: no rotation at all.
+// ------------------------------------------------------------------
+static geometry_msgs::msg::Quaternion identity_quat() {
   geometry_msgs::msg::Quaternion q;
   q.x = 0.0;
   q.y = 0.0;
@@ -25,128 +71,178 @@ geometry_msgs::msg::Quaternion identity_quaternion()
   return q;
 }
 
-moveit_msgs::msg::CollisionObject make_collision_object(
-    const std::string & id,
-    const shape_msgs::msg::SolidPrimitive & primitive,
-    const Eigen::Vector3d & position,
-    const std::string & frame,
-    const rclcpp::Time & stamp,
-    const geometry_msgs::msg::Quaternion & orientation)
-{
-  moveit_msgs::msg::CollisionObject co;
-  co.header.frame_id = frame;
-  co.header.stamp = stamp;
-  co.id = id;
-
-  co.primitives.push_back(primitive);
+// ------------------------------------------------------------------
+// Wrap a SolidPrimitive into a CollisionObject
+// ------------------------------------------------------------------
+static moveit_msgs::msg::CollisionObject
+make_obj(const std::string &id, const shape_msgs::msg::SolidPrimitive &shape,
+         const Eigen::Vector3d &position,
+         const geometry_msgs::msg::Quaternion &orientation,
+         const std::string &frame, const rclcpp::Time &stamp) {
+  moveit_msgs::msg::CollisionObject obj;
+  obj.header.frame_id = frame;
+  obj.header.stamp = stamp;
+  obj.id = id;
+  obj.operation = moveit_msgs::msg::CollisionObject::ADD;
 
   geometry_msgs::msg::Pose pose;
   pose.position.x = position.x();
   pose.position.y = position.y();
   pose.position.z = position.z();
   pose.orientation = orientation;
-  co.primitive_poses.push_back(pose);
 
-  co.operation = moveit_msgs::msg::CollisionObject::ADD;
-  return co;
+  obj.primitives.push_back(shape);
+  obj.primitive_poses.push_back(pose);
+  return obj;
 }
 
-}  // namespace
-
-moveit_msgs::msg::PlanningScene build_scan_scene(
-    const std::string & global_frame,
-    const Eigen::Vector3d & center,
-    const rclcpp::Time & stamp)
-{
-  // 1) Tavolo
-  shape_msgs::msg::SolidPrimitive table_box;
-  table_box.type = shape_msgs::msg::SolidPrimitive::BOX;
-  table_box.dimensions = {1.5, 1.5, 0.01};
-  auto table = make_collision_object(
-      "table", table_box, Eigen::Vector3d(0.0, 0.0, -0.02),
-      global_frame, stamp, identity_quaternion());
-
-  // 2) Disco di supporto sotto il target dello scan.
-  shape_msgs::msg::SolidPrimitive support_cyl;
-  support_cyl.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
-  support_cyl.dimensions = {0.004, 0.15};  // [altezza, raggio]
-  auto support = make_collision_object(
-      "support", support_cyl, center,
-      global_frame, stamp, identity_quaternion());
-
-  // 3) Gamba 1 del supporto, verticale.
-  shape_msgs::msg::SolidPrimitive support_leg1;
-  support_leg1.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
-  support_leg1.dimensions = {0.24, 0.011};  // [altezza, raggio]
-  const double leg1_x = -0.38;
-  const double leg1_y = 0.535 - 0.09;
-  const double leg1_z = -0.02 + 0.12;
-  Eigen::Vector3d leg1_position(leg1_x, leg1_y, leg1_z);
-  auto support_leg1_obj = make_collision_object(
-      "support_leg1", support_leg1, leg1_position,
-      global_frame, stamp, identity_quaternion());
-
-  // 4) Gamba 2: dal top di leg1 al punto piu' vicino sulla circonferenza del disco.
-  Eigen::Vector3d p1(leg1_x, leg1_y, leg1_z + support_leg1.dimensions[0] / 2.0);
-
-  Eigen::Vector3d v_proj(p1.x() - center.x(), p1.y() - center.y(), 0.0);
-  const double v_proj_len = v_proj.norm();
-  const double radius = support_cyl.dimensions[1];
-  Eigen::Vector3d q_closest;
-  if (v_proj_len > 1e-6) {
-    q_closest = center + (v_proj / v_proj_len) * radius;
-  } else {
-    q_closest = center + Eigen::Vector3d(radius, 0.0, 0.0);
+// ------------------------------------------------------------------
+// Load a mesh from a file path
+// ------------------------------------------------------------------
+static shape_msgs::msg::Mesh load_mesh_msg(const std::string &file_path) {
+  shapes::Mesh *m = shapes::createMeshFromResource(file_path);
+  shape_msgs::msg::Mesh mesh_msg;
+  shapes::ShapeMsg shape_msg;
+  if (m) {
+    shapes::constructMsgFromShape(m, shape_msg);
+    mesh_msg = boost::get<shape_msgs::msg::Mesh>(shape_msg);
+    delete m;
   }
+  return mesh_msg;
+}
 
-  Eigen::Vector3d vec = q_closest - p1;
-  Eigen::Vector3d z_dir = vec.normalized();
+// ------------------------------------------------------------------
+// Helper to build an ObjectColor entry.
+// ------------------------------------------------------------------
+static moveit_msgs::msg::ObjectColor
+make_color(const std::string &id, float r, float g, float b, float a = 1.0f) {
+  moveit_msgs::msg::ObjectColor oc;
+  oc.id = id;
+  oc.color.r = r;
+  oc.color.g = g;
+  oc.color.b = b;
+  oc.color.a = a;
+  return oc;
+}
 
-  const double leg2_len = 0.38;
-  shape_msgs::msg::SolidPrimitive support_leg2;
-  support_leg2.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
-  support_leg2.dimensions = {leg2_len, 0.011};
+} // namespace
 
-  Eigen::Vector3d leg2_center = p1 + z_dir * (leg2_len / 2.0);
-
-  // Costruzione della rotazione: allinea l'asse Z del cilindro a z_dir.
-  Eigen::Vector3d x_dir = Eigen::Vector3d(0.0, 1.0, 0.0).cross(z_dir);
-  if (x_dir.norm() < 1e-6) {
-    x_dir = Eigen::Vector3d(1.0, 0.0, 0.0).cross(z_dir);
-  }
-  x_dir.normalize();
-  Eigen::Vector3d y_dir = z_dir.cross(x_dir);
-
-  Eigen::Matrix3d rot_mat;
-  rot_mat.col(0) = x_dir;
-  rot_mat.col(1) = y_dir;
-  rot_mat.col(2) = z_dir;
-  Eigen::Quaterniond q(rot_mat);
-
-  geometry_msgs::msg::Quaternion leg2_ori;
-  leg2_ori.x = q.x();
-  leg2_ori.y = q.y();
-  leg2_ori.z = q.z();
-  leg2_ori.w = q.w();
-
-  auto support_leg2_obj = make_collision_object(
-      "support_leg2", support_leg2, leg2_center,
-      global_frame, stamp, leg2_ori);
-
-  // 5) Sfera marker al centro dello scan (oggetto da ispezionare).
-  shape_msgs::msg::SolidPrimitive center_sphere;
-  center_sphere.type = shape_msgs::msg::SolidPrimitive::SPHERE;
-  center_sphere.dimensions = {0.02};  // [raggio]
-  auto support_center = make_collision_object(
-      "support_center", center_sphere, center,
-      global_frame, stamp, identity_quaternion());
-
+moveit_msgs::msg::PlanningScene
+build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
+                 const rclcpp::Time &stamp) {
   moveit_msgs::msg::PlanningScene scene;
   scene.is_diff = true;
-  scene.world.collision_objects = {
-      table, support, support_leg1_obj, support_leg2_obj, support_center};
+
+  // ---------------- Table ----------------
+  shape_msgs::msg::SolidPrimitive table_shape;
+  table_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
+  table_shape.dimensions = {1.5, 1.5, 0.01};
+  Eigen::Vector3d table_pos(0.0, 0.0, -0.02);
+  moveit_msgs::msg::CollisionObject table = make_obj(
+      "table", table_shape, table_pos, identity_quat(), global_frame, stamp);
+
+  // ---------------- Support disk ----------------
+  shape_msgs::msg::SolidPrimitive disk_shape;
+  disk_shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
+  disk_shape.dimensions = {0.008, 0.15};
+  moveit_msgs::msg::CollisionObject support = make_obj(
+      "support", disk_shape, center, identity_quat(), global_frame, stamp);
+
+  // ---------------- Target sphere (internal marker) ----------------
+  shape_msgs::msg::SolidPrimitive sphere_shape;
+  sphere_shape.type = shape_msgs::msg::SolidPrimitive::SPHERE;
+  sphere_shape.dimensions = {0.01};
+  moveit_msgs::msg::CollisionObject target =
+      make_obj("support_center", sphere_shape, center, identity_quat(),
+               global_frame, stamp);
+
+  // ---------------- Support legs parameters ----------------
+  const double leg_height = 0.36;
+  const double leg1_height = 0.23;
+  const double leg_radius = 0.02;
+  const double table_z = -0.015;
+
+  Eigen::Vector3d leg1_bottom(-0.40, 0.60, table_z);
+  Eigen::Vector3d leg1_top(-0.40, 0.60, table_z + leg1_height);
+  Eigen::Vector3d leg1_mid = (leg1_bottom + leg1_top) * 0.5;
+
+  Eigen::Vector3d leg3_start(center.x(), center.y() + 0.15, center.z());
+  double angle_45 = 45.0 * M_PI / 180.0;
+  double angle_down = 5.0 * M_PI / 180.0;
+  Eigen::Vector3d leg3_dir(-std::sin(angle_45) * std::cos(angle_down),
+                           std::cos(angle_45) * std::cos(angle_down),
+                           -std::sin(angle_down));
+  Eigen::Vector3d leg3_end = leg3_start + leg_height * leg3_dir;
+  Eigen::Vector3d leg3_mid = (leg3_start + leg3_end) * 0.5;
+
+  // ---------------- Leg 1 ----------------
+  shape_msgs::msg::SolidPrimitive leg1_shape;
+  leg1_shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
+  leg1_shape.dimensions = {leg1_height, leg_radius};
+  moveit_msgs::msg::CollisionObject leg1 =
+      make_obj("leg1", leg1_shape, leg1_mid,
+               rotation_z_to(leg1_bottom, leg1_top), global_frame, stamp);
+
+  // ---------------- Leg 2 ----------------
+  double leg2_length = (leg1_top - leg3_end).norm();
+  shape_msgs::msg::SolidPrimitive leg2_shape;
+  leg2_shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
+  leg2_shape.dimensions = {leg2_length, leg_radius};
+  Eigen::Vector3d leg2_mid = (leg1_top + leg3_end) * 0.5;
+  moveit_msgs::msg::CollisionObject leg2 =
+      make_obj("leg2", leg2_shape, leg2_mid, rotation_z_to(leg3_end, leg1_top),
+               global_frame, stamp);
+
+  // ---------------- Leg 3 ----------------
+  shape_msgs::msg::SolidPrimitive leg3_shape;
+  leg3_shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
+  leg3_shape.dimensions = {leg_height, leg_radius};
+  moveit_msgs::msg::CollisionObject leg3 =
+      make_obj("leg3", leg3_shape, leg3_mid,
+               rotation_z_to(leg3_start, leg3_end), global_frame, stamp);
+
+  // ---------------- Mesh Artefact (OBJ) ----------------------
+  std::string package_path =
+      ament_index_cpp::get_package_share_directory("ur_automata_scene");
+  std::string mesh_path =
+      "file://" + package_path + "/meshes/ceramic_model.obj";
+
+  moveit_msgs::msg::CollisionObject artefact;
+  artefact.header.frame_id = global_frame;
+  artefact.header.stamp = stamp;
+  artefact.id = "artefact";
+  artefact.operation = moveit_msgs::msg::CollisionObject::ADD;
+
+  shape_msgs::msg::Mesh mesh_msg = load_mesh_msg(mesh_path);
+  artefact.meshes.push_back(mesh_msg);
+
+  geometry_msgs::msg::Pose mesh_pose;
+  mesh_pose.position.x = center.x();
+  mesh_pose.position.y = center.y();
+  mesh_pose.position.z = center.z();
+  mesh_pose.orientation = identity_quat();
+  artefact.mesh_poses.push_back(mesh_pose);
+
+  // ---------------- Assemble the scene ----------------
+  scene.world.collision_objects.push_back(table);
+  scene.world.collision_objects.push_back(support);
+  scene.world.collision_objects.push_back(target);
+  scene.world.collision_objects.push_back(leg1);
+  scene.world.collision_objects.push_back(leg2);
+  scene.world.collision_objects.push_back(leg3);
+  scene.world.collision_objects.push_back(artefact);
+
+  // ---------------- Colors ----------------
+  scene.object_colors.push_back(make_color("table", 1.0f, 1.0f, 1.0f));
+  scene.object_colors.push_back(make_color("support", 1.0f, 1.0f, 1.0f));
+  scene.object_colors.push_back(make_color("support_center", 1.0f, 0.0f, 0.0f));
+  scene.object_colors.push_back(make_color("leg1", 1.0f, 1.0f, 1.0f));
+  scene.object_colors.push_back(make_color("leg2", 1.0f, 1.0f, 1.0f));
+  scene.object_colors.push_back(make_color("leg3", 1.0f, 1.0f, 1.0f));
+  scene.object_colors.push_back(
+      make_color("artefact", 0.75f, 0.75f, 0.75f, 0.7f));
 
   return scene;
 }
 
-}  // namespace ur_automata_scene
+} // namespace ur_automata_scene

@@ -5,10 +5,10 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /MotionPlanning1
-        - /TF1
+        - /MotionPlanning1/Planning Request1
         - /TF1/Frames1
       Splitter Ratio: 0.5
-    Tree Height: 538
+    Tree Height: 543
   - Class: rviz_common/Help
     Name: Help
   - Class: rviz_common/Views
@@ -160,7 +160,7 @@ Visualization Manager:
         Interactive Marker Size: 0
         Joint Violation Color: 255; 0; 255
         Planning Group: ur_manipulator
-        Query Goal State: true
+        Query Goal State: false
         Query Start State: false
         Show Workspace: false
         Start State Alpha: 1
@@ -287,14 +287,14 @@ Visualization Manager:
         upper_arm_link:
           Value: false
         world:
-          Value: true
+          Value: false
         wrist_1_link:
           Value: false
         wrist_2_link:
           Value: false
         wrist_3_link:
           Value: false
-      Marker Scale: 0.800000011920929
+      Marker Scale: 0.6000000238418579
       Name: TF
       Show Arrows: false
       Show Axes: true
@@ -322,6 +322,30 @@ Visualization Manager:
                             {}
       Update Interval: 0
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: visualization_marker_array
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: visualization_marker_array
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -340,25 +364,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 2.0532989501953125
+      Distance: 2.299694776535034
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.038716282695531845
-        Y: 0.02464284934103489
-        Z: 0.5209872126579285
+        X: 0.07630932331085205
+        Y: 0.1264689862728119
+        Z: 0.10874629765748978
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.24500009417533875
+      Pitch: 0.5749998688697815
       Target Frame: world
       Value: Orbit (rviz_default_plugins)
-      Yaw: 0.5820010304450989
+      Yaw: 0.7020009160041809
     Saved: ~
 Window Geometry:
   Displays:
@@ -372,7 +396,7 @@ Window Geometry:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000200000000000002b400000415fc0200000004fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00fffffffb000000100044006900730070006c006100790073010000003b0000029b000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e006701000002dc000001740000016900fffffffb0000000800480065006c0070000000029a0000006e0000006e00ffffff000000010000019b00000379fc0200000001fb0000000a00560069006500770073000000003b00000379000000a000ffffff000004840000041500000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000200000000000001c900000415fc0200000004fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00fffffffb000000100044006900730070006c006100790073010000003b000002a0000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e006701000002e10000016f0000016900fffffffb0000000800480065006c0070000000029a0000006e0000006e00ffffff000000010000019b00000379fc0200000001fb0000000a00560069006500770073000000003b00000379000000a000ffffff0000056f0000041500000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: true
   Width: 1854

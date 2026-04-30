@@ -9,10 +9,10 @@
 
 namespace ur_automata_scene {
 
-// Costruisce la PlanningScene con tavolo + disco di supporto + due gambe del
-// supporto + sfera marker al centro dello scan. Tutti gli oggetti sono espressi
-// nel frame `global_frame`. `center` è la posizione del piatto cilindrico
-// (e della sfera marker) in metri.
+// Build the planning scene with: table, support disk, target sphere,
+// and three legs that hold the disk in place. All objects are placed
+// in `global_frame`. `center` is the position of the support disk
+// (and the target sphere), expressed in meters.
 moveit_msgs::msg::PlanningScene build_scan_scene(
     const std::string & global_frame,
     const Eigen::Vector3d & center,
