@@ -141,6 +141,33 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   moveit_msgs::msg::CollisionObject table = make_obj(
       "table", table_shape, table_pos, identity_quat(), global_frame, stamp);
 
+  // ---------------- Left wall ----------------
+  shape_msgs::msg::SolidPrimitive leftwall_shape;
+  leftwall_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
+  leftwall_shape.dimensions = {0.01, 1.5, 1.5};
+  Eigen::Vector3d leftwall_pos(-0.85, 0, 0.73);
+  moveit_msgs::msg::CollisionObject leftwall =
+      make_obj("leftwall", leftwall_shape, leftwall_pos, identity_quat(),
+               global_frame, stamp);
+
+  // ---------------- Right wall ----------------
+  shape_msgs::msg::SolidPrimitive rightwall_shape;
+  rightwall_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
+  rightwall_shape.dimensions = {0.01, 1.5, 1.5};
+  Eigen::Vector3d rightwall_pos(0.85, 0, 0.73);
+  moveit_msgs::msg::CollisionObject rightwall =
+      make_obj("rightwall", rightwall_shape, rightwall_pos, identity_quat(),
+               global_frame, stamp);
+
+  // ---------------- Back wall ----------------
+  shape_msgs::msg::SolidPrimitive backwall_shape;
+  backwall_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
+  backwall_shape.dimensions = {1.5, 0.01, 1.5};
+  Eigen::Vector3d backwall_pos(0, -0.50, 0.73);
+  moveit_msgs::msg::CollisionObject backwall =
+      make_obj("backwall", backwall_shape, backwall_pos, identity_quat(),
+               global_frame, stamp);
+
   // ---------------- Support disk ----------------
   shape_msgs::msg::SolidPrimitive disk_shape;
   disk_shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
@@ -231,6 +258,9 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   scene.world.collision_objects.push_back(leg2);
   scene.world.collision_objects.push_back(leg3);
   scene.world.collision_objects.push_back(artefact);
+  // scene.world.collision_objects.push_back(leftwall);
+  // scene.world.collision_objects.push_back(rightwall);
+  // scene.world.collision_objects.push_back(backwall);
 
   // ---------------- Colors ----------------
   scene.object_colors.push_back(make_color("table", 1.0f, 1.0f, 1.0f));
@@ -241,6 +271,9 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   scene.object_colors.push_back(make_color("leg3", 1.0f, 1.0f, 1.0f));
   scene.object_colors.push_back(
       make_color("artefact", 0.75f, 0.75f, 0.75f, 0.7f));
+  scene.object_colors.push_back(make_color("leftwall", 1.0f, 1.0f, 1.0f));
+  scene.object_colors.push_back(make_color("rightwall", 1.0f, 1.0f, 1.0f));
+  scene.object_colors.push_back(make_color("backwall", 1.0f, 1.0f, 1.0f));
 
   return scene;
 }

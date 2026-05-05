@@ -1,4 +1,10 @@
 ur_manipulator:
-  kinematics_solver: kdl_kinematics_plugin/KDLKinematicsPlugin
-  kinematics_solver_search_resolution: 0.0050000000000000001
-  kinematics_solver_timeout: 0.0050000000000000001
+  kinematics_solver: trac_ik_kinematics_plugin/TRAC_IKKinematicsPlugin   # in alternativa: kdl_kinematics_plugin/KDLKinematicsPlugin
+  kinematics_solver_search_resolution: 0.005
+  kinematics_solver_timeout: 0.05
+  # solve_type per TRAC-IK:
+  #   Distance      → IK più vicina al seed nei giunti (consigliato per movimenti fluidi)
+  #   Speed         → primo IK valido trovato (più rapido)
+  #   Manipulation1 → preferisce config con manipolabilità alta (lontane da singolarità)
+  #   Manipulation2 → idem, metrica alternativa
+  solve_type: Distance

@@ -60,7 +60,8 @@ RUN apt-get update && \
     ros-${ROS_DISTRO}-ros-gz \
     ros-${ROS_DISTRO}-rqt-runtime-monitor \
     ros-${ROS_DISTRO}-plotjuggler-ros \
-    ros-${ROS_DISTRO}-moveit && \
+    ros-${ROS_DISTRO}-moveit \
+    ros-{ROS_DISTRO}-trac-ik-kinematics-plugin && \
     rm -rf /var/lib/apt/lists/*
 
 # ========== Python packages ========== #

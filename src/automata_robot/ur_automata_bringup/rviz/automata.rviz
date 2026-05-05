@@ -52,12 +52,12 @@ Visualization Manager:
       MoveIt_Workspace:
         Center:
           X: 0
-          Y: 0
-          Z: 0
+          Y: 0.25
+          Z: 0.5
         Size:
-          X: 2
-          Y: 2
-          Z: 2
+          X: 1.5
+          Y: 1.75
+          Z: 1.5
       Name: MotionPlanning
       Planned Path:
         Color Enabled: false

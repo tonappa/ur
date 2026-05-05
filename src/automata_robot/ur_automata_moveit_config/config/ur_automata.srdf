@@ -29,6 +29,14 @@
         <joint name="wrist_2_joint" value="1.571"/>
         <joint name="wrist_3_joint" value="-1.571"/>
     </group_state>
+    <group_state name="lower_scan_ready" group="ur_manipulator">
+        <joint name="elbow_joint" value="1.571"/>
+        <joint name="shoulder_lift_joint" value="-1.571"/>
+        <joint name="shoulder_pan_joint" value="0"/>
+        <joint name="wrist_1_joint" value="0"/>
+        <joint name="wrist_2_joint" value="1.571"/>
+        <joint name="wrist_3_joint" value="-1.571"/>
+    </group_state>
     <!-- Standard UR5e adjacent pairs (always disabled) -->
     <disable_collisions link1="base_link" link2="base_link_inertia" reason="Adjacent" />
     <disable_collisions link1="base_link_inertia" link2="shoulder_link" reason="Adjacent" />

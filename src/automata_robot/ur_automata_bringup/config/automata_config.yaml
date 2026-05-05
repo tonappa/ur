@@ -1,13 +1,15 @@
 robot:
-  ip: 192.168.1.97          # UR (o URSim) IP address
+  ip: 192.168.1.97          # UR (o URSim) IP address URSIM 192.168.56.101
   type: ur5                 # ur3, ur3e, ur5, ur5e, ur10, ur10e, ur16e
 
 planning:
   group: ur_manipulator
   global_frame: world                  # frame in cui sono espressi gli ostacoli e il centro dello scan
   end_effector_link: ee_automata_tcp   # tip_link del kinematic chain (deve coincidere col SRDF)
-  trajectory_scaling_factor: 0.1       # default conservativo per i primi test
-  home_pose_name: home                 # nome del group_state nell'SRDF usato come fallback / recovery
+  trajectory_scaling_factor: 0.4       # default conservativo per i primi test
+  home_pose_name: home                 # group_state SRDF: pose iniziale e recovery per upper hemisphere
+  lower_home_pose_name: lower_scan_ready  # group_state SRDF: usato in scan lower-only e nel ramo lower di full
+                                          # (DEVE esistere in ur_automata_moveit_config/config/ur_automata.srdf)
   use_moveit: true                     # use moveit
   use_scene: true                      # spawn scene with MoveIt, scene defined in ur_automata_scene pkg
   use_rviz: true                       # launch RViz alongside MoveIt
@@ -15,8 +17,8 @@ planning:
 scan:
   center: [0.133, 0.40, 0.5]   # centro del supporto, in metri, nel frame `planning.global_frame`
   radius: 0.30               # raggio della sfera di waypoint, in metri
-  hemisphere: upper          # upper | lower | full  (full = sup prima, poi inf)
-  direction: longitudinal   # latitudinal | longitudinal
+  hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)
+  direction: latitudinal   # latitudinal | longitudinal
 
   # Banda equatoriale "vietata": il robot non può puntare in linea col supporto.
   # L'ultimo anello/punto si ferma a (90° - equator_exclusion_deg) dal polo.
@@ -25,24 +27,67 @@ scan:
 
   # --- parametri LATITUDINAL (ring-by-ring) ---
   # numero di anelli tra polo ed equatore (escluso polo)
-  num_rings: 3
+  num_rings: 4
   # punti per ogni anello
-  points_per_ring: 6
+  points_per_ring: 8
 
   # --- parametri LONGITUDINAL (meridian-by-meridian) ---
   # numero di meridiani
   num_arc: 5
   # punti per ogni meridiano (escluso polo)
-  points_per_arc: 5
+  points_per_arc: 4
 
-  # true:  X del TCP forzato orizzontale (no roll attorno a Y)
-  # false: roll libero, MoveIt sceglie la posa più comoda via OrientationConstraint
-  lock_roll: true
+  # true:  pitch del TCP bloccato (X del TCP orizzontale, nessuna rotazione attorno a Y)
+  # false: pitch libero — Y_TCP continua a puntare al centro, ma la rotazione attorno
+  #        a Y è scelta cercando un IK valido (priorità a pitch=0, poi ±step).
+  lock_pitch: false
+
+  # Quando lock_pitch=false: ricerca del pitch attorno a Y_TCP (gradi).
+  # Per ogni waypoint si provano TUTTI gli offset in [-range, +range] con passo step;
+  # tra quelli con IK valida vince quello che minimizza:
+  #   joint_distance(soluzione_IK, stato_corrente) + xparallel_bias * |offset_rad|
+  # joint_distance: somma quadratica delle differenze dei giunti rivoluti.
+  # xparallel_bias: 0.0 = qualsiasi pitch va bene; 0.05 = preferenza moderata per
+  #                 X parallelo (offset=0); valori alti (>0.3) = X parallelo quasi
+  #                 sempre, eccetto quando un altro pitch evita movimenti enormi.
+  pitch_search_range_deg: 180.0
+  pitch_search_step_deg:  15.0
+  pitch_xparallel_bias:   0.05
+
+  # Timeout (secondi) di un singolo setFromIK quando lock_pitch=false.
+  # Più alto = KDL ha più tempo per fare random-restart e trovare soluzioni in
+  # configurazioni difficili (vicino a singolarità, grandi rotazioni). Costa al
+  # massimo (n_offset × ik_timeout) per waypoint nel caso pessimo, ma in pratica
+  # ci si ferma molto prima perché di solito qualche offset trova IK in pochi ms.
+  # Con TRAC-IK il timeout può essere molto più basso (5-50 ms basta).
+  # Con KDL serviva ~0.2 s perché era più lento e meno robusto.
+  ik_timeout: 0.05
 
   # Pipeline di motion planning:
-  #   ompl     → OMPL/RRTConnect (default storico, sampling-based, supporta path constraints)
+  #   ompl     → OMPL (sampling-based, supporta path constraints)
   #   pilz_ptp → Pilz Industrial Motion Planner, point-to-point in joint-space (rapido, deterministico, no constraints)
   #   pilz_lin → Pilz LIN, lineare in cartesiano (rischio singolarità)
-  # NB: pilz_* IGNORA il path constraint usato da lock_roll=false.
+  # NB: pilz_* IGNORA il path constraint usato da lock_pitch=false.
   # NB: per usare pilz_* serve `pilz_industrial_motion_planner_planning.yaml` in ur_automata_moveit_config/config.
   planner: ompl
+
+  # Algoritmo OMPL (usato solo se planner=ompl, ignorato altrimenti).
+  # Opzioni tipiche dell'ompl_planning.yaml upstream UR:
+  #   RRTConnect (default, bidirezionale, veloce, non ottimo)
+  #   RRT, RRTstar (asintoticamente ottimo), TRRT, BiTRRT, LBTRRT
+  #   PRM, PRMstar, LazyPRM, LazyPRMstar
+  #   KPIECE, BKPIECE, LBKPIECE
+  #   EST, BiEST, ProjEST, SBL, FMT, BFMT, PDST, STRIDE
+  ompl_algorithm: RRTstar
+
+  # Tempo massimo (secondi) per un singolo tentativo di planning OMPL.
+  # 5 s è il default storico; in scena cluttered (gambe, muri) salire a 10-15 s
+  # aiuta i waypoint difficili. Costo: peggiore solo sui waypoint che falliscono;
+  # i facili tornano in <100 ms appena trovano un path.
+  planning_time: 10.0
+
+  # Numero di tentativi indipendenti di planning per ogni waypoint.
+  # Ogni attempt usa un seed casuale diverso → tre chance di trovare un path
+  # quando uno solo non basta. OMPL si ferma al primo che riesce, quindi il
+  # tempo extra si paga solo nei casi difficili. Default MoveIt: 1.
+  planning_attempts: 2
