@@ -24,6 +24,7 @@ def generate_launch_description():
 
     global_frame = cfg["planning"]["global_frame"]
     scan_center = [float(v) for v in cfg["scan"]["center"]]
+    platform_sim = bool(cfg["scan"].get("platform_sim", True))
 
     scene_node = Node(
         package="ur_automata_scene",
@@ -33,6 +34,7 @@ def generate_launch_description():
         parameters=[{
             "global_frame": global_frame,
             "scan_center": scan_center,
+            "platform_sim": platform_sim,
         }],
     )
 

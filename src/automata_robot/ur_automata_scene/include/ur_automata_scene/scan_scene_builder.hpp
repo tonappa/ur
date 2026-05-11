@@ -13,10 +13,14 @@ namespace ur_automata_scene {
 // and three legs that hold the disk in place. All objects are placed
 // in `global_frame`. `center` is the position of the support disk
 // (and the target sphere), expressed in meters.
+// platform_sim:
+//   true  → ricostruisce la piattaforma con disco + 3 gambe cilindriche (modo classico)
+//   false → carica il mesh STL `meshes/platform.stl` (geometria reale)
 moveit_msgs::msg::PlanningScene build_scan_scene(
     const std::string & global_frame,
     const Eigen::Vector3d & center,
-    const rclcpp::Time & stamp);
+    const rclcpp::Time & stamp,
+    bool platform_sim);
 
 }  // namespace ur_automata_scene
 

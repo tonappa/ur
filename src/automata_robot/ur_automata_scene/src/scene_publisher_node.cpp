@@ -26,6 +26,9 @@ public:
     std::vector<double> default_center = {0.0, 0.4, 0.5};
     declare_parameter<std::vector<double>>("scan_center", default_center);
 
+    // Parameter: true = disco + 3 gambe (simulato), false = mesh STL della piattaforma reale
+    declare_parameter<bool>("platform_sim", true);
+
     // Create the service client we will call later
     client_ = create_client<moveit_msgs::srv::ApplyPlanningScene>("/apply_planning_scene");
   }
@@ -45,6 +48,7 @@ public:
     }
 
     Eigen::Vector3d center(center_vec[0], center_vec[1], center_vec[2]);
+    bool platform_sim = get_parameter("platform_sim").as_bool();
 
     // ---------------- Wait for the MoveIt service ----------------
     RCLCPP_INFO(get_logger(), "Waiting for /apply_planning_scene service ...");
@@ -60,7 +64,7 @@ public:
 
     // ---------------- Build the scene ----------------
     moveit_msgs::msg::PlanningScene scene =
-        ur_automata_scene::build_scan_scene(global_frame, center, now());
+        ur_automata_scene::build_scan_scene(global_frame, center, now(), platform_sim);
 
     // ---------------- Build the service request ----------------
     std::shared_ptr<moveit_msgs::srv::ApplyPlanningScene::Request> request =

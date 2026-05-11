@@ -16,6 +16,7 @@ planning:
 
 scan:
   center: [0.133, 0.40, 0.504]   # centro del supporto, in metri, nel frame `planning.global_frame` y era 40
+  platform_sim: false   # true: scena con disco+3 gambe simulati | false: usa il mesh STL meshes/platform.stl
   radius: 0.30               # raggio della sfera di waypoint, in metri
   hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)
   direction: latitudinal   # latitudinal | longitudinal
