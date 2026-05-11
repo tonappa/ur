@@ -20,7 +20,8 @@
       "Read(//opt/ros/jazzy/share/ur_robot_driver/resources/**)",
       "Read(//home/tonappa/.ursim/urcaps/**)",
       "Bash(docker exec *)",
-      "Bash(apt-cache show *)"
+      "Bash(apt-cache show *)",
+      "Bash(xargs cat)"
     ]
   }
 }

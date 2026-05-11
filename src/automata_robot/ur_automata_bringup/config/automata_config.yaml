@@ -15,21 +15,22 @@ planning:
   use_rviz: true                       # launch RViz alongside MoveIt
 
 scan:
-  center: [0.133, 0.40, 0.5]   # centro del supporto, in metri, nel frame `planning.global_frame`
+  center: [0.133, 0.40, 0.504]   # centro del supporto, in metri, nel frame `planning.global_frame` y era 40
   radius: 0.30               # raggio della sfera di waypoint, in metri
   hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)
   direction: latitudinal   # latitudinal | longitudinal
 
   # Banda equatoriale "vietata": il robot non può puntare in linea col supporto.
-  # L'ultimo anello/punto si ferma a (90° - equator_exclusion_deg) dal polo.
-  # Tipico: 10-15 gradi.
-  equator_exclusion_deg: 15.0 # numero decimale! dichiarato double nel codice
+  # L'ultimo anello/punto si ferma a (90° - exclusion) dal polo.
+  # I due emisferi possono avere valori diversi: l'inferiore spesso ha più spazio.
+  equator_exclusion_upper_deg: 15.0
+  equator_exclusion_lower_deg: 20.0
 
   # --- parametri LATITUDINAL (ring-by-ring) ---
   # numero di anelli tra polo ed equatore (escluso polo)
   num_rings: 4
   # punti per ogni anello
-  points_per_ring: 8
+  points_per_ring: 15
 
   # --- parametri LONGITUDINAL (meridian-by-meridian) ---
   # numero di meridiani
@@ -41,6 +42,14 @@ scan:
   # false: pitch libero — Y_TCP continua a puntare al centro, ma la rotazione attorno
   #        a Y è scelta cercando un IK valido (priorità a pitch=0, poi ±step).
   lock_pitch: false
+  stagger_rings: true    # se true, gli anelli pari sono sfasati di mezzo passo → copertura più uniforme
+  adaptive_rings: true   # se true, points_per_ring scala con sin(theta) → meno punti al polo, più all'equatore
+  occlusion_check: true  # se true, scarta le configurazioni IK dove un link del braccio copre la vista camera→centro
+  occlusion_threshold_deg: 20.0  # angolo del cono di occlusione in gradi (tipico: 15-25)
+  fallback_search: true  # se true, cerca un punto alternativo vicino ai FAIL (entrambi gli emisferi)
+  fallback_radius_mm: 20.0  # raggio di ricerca sulla sfera in mm (es. 10-30)
+  fallback_planning_time: 3.0  # planning_time più basso per il fallback
+  fallback_max_plan_attempts: 3  # max numero di plan() nel fallback (i top N candidati per joint_distance)
 
   # Quando lock_pitch=false: ricerca del pitch attorno a Y_TCP (gradi).
   # Per ogni waypoint si provano TUTTI gli offset in [-range, +range] con passo step;
@@ -61,7 +70,7 @@ scan:
   # ci si ferma molto prima perché di solito qualche offset trova IK in pochi ms.
   # Con TRAC-IK il timeout può essere molto più basso (5-50 ms basta).
   # Con KDL serviva ~0.2 s perché era più lento e meno robusto.
-  ik_timeout: 0.05
+  ik_timeout: 0.05 #0.05
 
   # Pipeline di motion planning:
   #   ompl     → OMPL (sampling-based, supporta path constraints)
@@ -78,16 +87,16 @@ scan:
   #   PRM, PRMstar, LazyPRM, LazyPRMstar
   #   KPIECE, BKPIECE, LBKPIECE
   #   EST, BiEST, ProjEST, SBL, FMT, BFMT, PDST, STRIDE
-  ompl_algorithm: RRTstar
+  ompl_algorithm: RRTConnect
 
   # Tempo massimo (secondi) per un singolo tentativo di planning OMPL.
   # 5 s è il default storico; in scena cluttered (gambe, muri) salire a 10-15 s
   # aiuta i waypoint difficili. Costo: peggiore solo sui waypoint che falliscono;
   # i facili tornano in <100 ms appena trovano un path.
-  planning_time: 10.0
+  planning_time: 5.0
 
   # Numero di tentativi indipendenti di planning per ogni waypoint.
   # Ogni attempt usa un seed casuale diverso → tre chance di trovare un path
   # quando uno solo non basta. OMPL si ferma al primo che riesce, quindi il
   # tempo extra si paga solo nei casi difficili. Default MoveIt: 1.
-  planning_attempts: 2
+  planning_attempts: 3

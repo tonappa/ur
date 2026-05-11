@@ -29,7 +29,10 @@ struct ScanConfig {
   int num_arc;                  // number of meridians
   int points_per_arc;           // points per meridian (excluding pole)
 
-  double equator_exclusion_rad; // angle (radians) to skip near the equator
+  double equator_exclusion_upper_rad; // angle (radians) to skip near equator for upper hemisphere
+  double equator_exclusion_lower_rad; // angle (radians) to skip near equator for lower hemisphere
+  bool stagger_rings;                 // if true, even rings are offset by half angular step
+  bool adaptive_rings;                // if true, scale points_per_ring by sin(theta) so coverage is uniform
 };
 
 // Generates the list of poses the robot should visit during the scan.

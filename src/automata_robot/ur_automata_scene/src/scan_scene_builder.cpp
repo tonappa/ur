@@ -136,8 +136,10 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   // ---------------- Table ----------------
   shape_msgs::msg::SolidPrimitive table_shape;
   table_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
-  table_shape.dimensions = {1.5, 1.5, 0.01};
-  Eigen::Vector3d table_pos(0.0, 0.0, -0.02);
+  // Spessore 0.10 m, centro a z=-0.05 → faccia superiore a z=0.0 (piano base
+  // del robot). Blocca il gomito che nelle pose laterali basse scende sotto z=0.
+  table_shape.dimensions = {1.5, 1.5, 0.10};
+  Eigen::Vector3d table_pos(0.0, 0.0, -0.05);
   moveit_msgs::msg::CollisionObject table = make_obj(
       "table", table_shape, table_pos, identity_quat(), global_frame, stamp);
 

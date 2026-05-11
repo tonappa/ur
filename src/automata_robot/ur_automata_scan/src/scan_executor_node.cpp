@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -40,6 +41,7 @@ const Color COLOR_GRAY   = {0.5f, 0.5f, 0.5f};  // not visited yet
 const Color COLOR_YELLOW = {1.0f, 0.85f, 0.0f}; // currently being planned/executed
 const Color COLOR_GREEN  = {0.0f, 1.0f, 0.0f};  // reached successfully
 const Color COLOR_RED    = {1.0f, 0.0f, 0.0f};  // failed
+const Color COLOR_BLUE   = {0.0f, 0.4f, 1.0f};  // fallback waypoint
 
 // ============================================================================
 // ANSI escape codes for the in-place table
@@ -130,7 +132,8 @@ enum class WpStatus {
   RUNNING,
   DONE,
   HOMING,
-  FAIL
+  FAIL,
+  FALLBACK_ORIGIN  // original wp unreachable; a nearby fallback was executed instead
 };
 
 struct WpRow {
@@ -139,6 +142,8 @@ struct WpRow {
   bool actual_set = false;            // true if actual_pose has been filled
   geometry_msgs::msg::Pose actual;    // pose actually reached (may differ when lock_pitch=false)
   bool reoriented = false;            // true if actual orientation differs from target
+  bool fallback_set = false;          // true if a nearby fallback pose was found
+  geometry_msgs::msg::Pose fallback;  // fallback pose executed instead of target
 };
 
 // Convert quaternion (geometry_msgs) to RPY in degrees, XYZ-Euler convention
@@ -165,11 +170,12 @@ static double quat_angle_diff(
 static const char * status_label(WpStatus s)
 {
   switch (s) {
-    case WpStatus::PENDING: return "PENDING";
-    case WpStatus::RUNNING: return "RUNNING";
-    case WpStatus::DONE:    return "DONE";
-    case WpStatus::HOMING:  return "HOMING";
-    case WpStatus::FAIL:    return "FAIL";
+    case WpStatus::PENDING:         return "PENDING";
+    case WpStatus::RUNNING:         return "RUNNING";
+    case WpStatus::DONE:            return "DONE";
+    case WpStatus::HOMING:          return "HOMING";
+    case WpStatus::FAIL:            return "FAIL";
+    case WpStatus::FALLBACK_ORIGIN: return "FALLBACK";
   }
   return "?";
 }
@@ -177,11 +183,12 @@ static const char * status_label(WpStatus s)
 static const char * status_color(WpStatus s)
 {
   switch (s) {
-    case WpStatus::PENDING: return ansi::GRAY;
-    case WpStatus::RUNNING: return ansi::YELLOW;
-    case WpStatus::DONE:    return ansi::GREEN;
-    case WpStatus::HOMING:  return ansi::YELLOW;
-    case WpStatus::FAIL:    return ansi::RED;
+    case WpStatus::PENDING:         return ansi::GRAY;
+    case WpStatus::RUNNING:         return ansi::YELLOW;
+    case WpStatus::DONE:            return ansi::GREEN;
+    case WpStatus::HOMING:          return ansi::YELLOW;
+    case WpStatus::FAIL:            return ansi::RED;
+    case WpStatus::FALLBACK_ORIGIN: return "\033[34m";  // blue
   }
   return ansi::RESET;
 }
@@ -221,6 +228,43 @@ static double joint_distance(
     sum += diff * diff;
   }
   return std::sqrt(sum);
+}
+
+// Returns true if any arm link falls inside the camera's view cone toward the
+// sphere center. We only check links that are between the TCP and the center
+// (not behind the camera) and within threshold_rad of the camera-to-center axis.
+// Links too close to the TCP (< 1 cm) are ignored — they are part of the wrist
+// and can't physically occlude the scene.
+static bool is_arm_occluding(
+  const moveit::core::RobotState & state,
+  const moveit::core::JointModelGroup * jmg,
+  const std::string & ee_link,
+  const Eigen::Vector3d & center,
+  double threshold_rad)
+{
+  Eigen::Vector3d tcp_pos  = state.getGlobalLinkTransform(ee_link).translation();
+  Eigen::Vector3d view_dir = (center - tcp_pos).normalized();
+  double dist_to_center    = (center - tcp_pos).norm();
+
+  for (const auto * link : jmg->getLinkModels()) {
+    if (link->getName() == ee_link) continue;
+
+    Eigen::Vector3d link_pos = state.getGlobalLinkTransform(link->getName()).translation();
+    Eigen::Vector3d to_link  = link_pos - tcp_pos;
+    double dist = to_link.norm();
+
+    // Skip links that are too close to the TCP (wrist area) or behind the camera
+    if (dist < 0.01) continue;
+
+    double cos_angle = view_dir.dot(to_link / dist);
+    double angle = std::acos(std::clamp(cos_angle, -1.0, 1.0));
+
+    // Link is inside the view cone AND closer than the center (i.e. in the way)
+    if (angle < threshold_rad && dist < dist_to_center) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ============================================================================
@@ -359,6 +403,42 @@ static void set_marker_color(MarkerArray & arr, size_t i, const Color & c)
   arr.markers[2 * i + 1].color.b = c.b;
 }
 
+// Shrink the sphere marker for a FALLBACK_ORIGIN waypoint so it's visually
+// distinct from normal markers (small gray dot instead of the usual size).
+static void set_marker_small(MarkerArray & arr, size_t i)
+{
+  arr.markers[2 * i].scale.x = arr.markers[2 * i].scale.y = arr.markers[2 * i].scale.z = 0.010;
+}
+
+// Build a look-at pose: position at `pos`, Y-axis pointing toward `center`.
+// Duplicates the logic in sphere_waypoint_generator.cpp so we don't need to
+// expose it as a public symbol.
+static geometry_msgs::msg::Pose make_lookat(
+  const Eigen::Vector3d & pos, const Eigen::Vector3d & center)
+{
+  Eigen::Vector3d y_dir = (center - pos).normalized();
+  Eigen::Vector3d ref   = (y_dir.cross(Eigen::Vector3d::UnitZ()).norm() > 1e-6)
+                          ? Eigen::Vector3d::UnitZ() : Eigen::Vector3d::UnitX();
+  Eigen::Vector3d x_dir = y_dir.cross(ref).normalized();
+  Eigen::Vector3d z_dir = x_dir.cross(y_dir);
+
+  Eigen::Matrix3d rot;
+  rot.col(0) = x_dir;
+  rot.col(1) = y_dir;
+  rot.col(2) = z_dir;
+  Eigen::Quaterniond q(rot);
+
+  geometry_msgs::msg::Pose pose;
+  pose.position.x    = pos.x();
+  pose.position.y    = pos.y();
+  pose.position.z    = pos.z();
+  pose.orientation.x = q.x();
+  pose.orientation.y = q.y();
+  pose.orientation.z = q.z();
+  pose.orientation.w = q.w();
+  return pose;
+}
+
 static void publish_markers(
   rclcpp::Publisher<MarkerArray>::SharedPtr pub,
   const MarkerArray & arr)
@@ -464,8 +544,17 @@ int main(int argc, char ** argv)
   node->declare_parameter<int>        ("scan_points_per_ring",      8);   // latitudinal
   node->declare_parameter<int>        ("scan_num_arc",              6);   // longitudinal
   node->declare_parameter<int>        ("scan_points_per_arc",       5);   // longitudinal
-  node->declare_parameter<double>     ("scan_equator_exclusion_deg",10.0);
-  node->declare_parameter<bool>       ("scan_lock_pitch",             true);
+  node->declare_parameter<double>     ("scan_equator_exclusion_upper_deg", 10.0);
+  node->declare_parameter<double>     ("scan_equator_exclusion_lower_deg", 10.0);
+  node->declare_parameter<bool>       ("scan_lock_pitch",                   true);
+  node->declare_parameter<bool>       ("scan_stagger_rings",                false);
+  node->declare_parameter<bool>       ("scan_adaptive_rings",               false);
+  node->declare_parameter<bool>       ("scan_occlusion_check",              false);
+  node->declare_parameter<double>     ("scan_occlusion_threshold_deg",      20.0);
+  node->declare_parameter<bool>       ("scan_fallback_search",              false);
+  node->declare_parameter<double>     ("scan_fallback_radius_mm",           20.0);
+  node->declare_parameter<double>     ("scan_fallback_planning_time",        3.0);
+  node->declare_parameter<int>        ("scan_fallback_max_plan_attempts",    3);
   node->declare_parameter<std::string>("scan_planner",                "ompl");
   node->declare_parameter<std::string>("scan_ompl_algorithm",         "RRTConnect");
   node->declare_parameter<double>     ("scan_pitch_search_range_deg", 90.0);
@@ -489,8 +578,18 @@ int main(int argc, char ** argv)
   const int         points_per_ring = node->get_parameter("scan_points_per_ring").as_int();
   const int         num_arc         = node->get_parameter("scan_num_arc").as_int();
   const int         points_per_arc  = node->get_parameter("scan_points_per_arc").as_int();
-  const double      exclusion_deg   = node->get_parameter("scan_equator_exclusion_deg").as_double();
-  const bool        lock_pitch      = node->get_parameter("scan_lock_pitch").as_bool();
+  const double      exclusion_upper_deg = node->get_parameter("scan_equator_exclusion_upper_deg").as_double();
+  const double      exclusion_lower_deg = node->get_parameter("scan_equator_exclusion_lower_deg").as_double();
+  const bool        lock_pitch          = node->get_parameter("scan_lock_pitch").as_bool();
+  const bool        stagger_rings           = node->get_parameter("scan_stagger_rings").as_bool();
+  const bool        adaptive_rings          = node->get_parameter("scan_adaptive_rings").as_bool();
+  const bool        occlusion_check         = node->get_parameter("scan_occlusion_check").as_bool();
+  const double      occlusion_threshold_rad =
+    node->get_parameter("scan_occlusion_threshold_deg").as_double() * M_PI / 180.0;
+  const bool        fallback_search     = node->get_parameter("scan_fallback_search").as_bool();
+  const double      fallback_radius_mm  = node->get_parameter("scan_fallback_radius_mm").as_double();
+  const double      fallback_planning_time = node->get_parameter("scan_fallback_planning_time").as_double();
+  const int         fallback_max_plan_attempts = node->get_parameter("scan_fallback_max_plan_attempts").as_int();
   const std::string planner_str     = node->get_parameter("scan_planner").as_string();
   const std::string ompl_algorithm  = node->get_parameter("scan_ompl_algorithm").as_string();
   const double      pitch_range_deg = node->get_parameter("scan_pitch_search_range_deg").as_double();
@@ -514,7 +613,10 @@ int main(int argc, char ** argv)
   cfg.points_per_ring = points_per_ring;
   cfg.num_arc         = num_arc;
   cfg.points_per_arc  = points_per_arc;
-  cfg.equator_exclusion_rad = exclusion_deg * M_PI / 180.0;
+  cfg.equator_exclusion_upper_rad = exclusion_upper_deg * M_PI / 180.0;
+  cfg.equator_exclusion_lower_rad = exclusion_lower_deg * M_PI / 180.0;
+  cfg.stagger_rings               = stagger_rings;
+  cfg.adaptive_rings              = adaptive_rings;
 
   if (hemi_str == "upper") {
     cfg.hemisphere = HEMISPHERE_UPPER;
@@ -665,14 +767,9 @@ int main(int argc, char ** argv)
   // momento della transizione upper→lower.
   std::string recovery_pose_name =
     (cfg.hemisphere == HEMISPHERE_LOWER) ? lower_home_pose_name : home_pose_name;
-  // Contatore di plan() consecutivi falliti. Quando plan() fallisce, l'idea è
-  // NON andare a home (il robot non si è mosso, andare a home è solo tempo
-  // sprecato): tentiamo subito il prossimo waypoint dalla posizione attuale.
-  // Solo dopo `recovery_after_consecutive_fails` fallimenti di fila il robot
-  // potrebbe essere finito in una configurazione "scomoda" da cui non si esce
-  // più → recovery a home come reset, e il contatore riparte da zero.
-  int consecutive_plan_fails = 0;
-  const int recovery_after_consecutive_fails = 3;
+
+  // Cronometro dall'inizio del primo waypoint alla fine del ciclo
+  auto scan_start_time = std::chrono::steady_clock::now();
 
   for (size_t i = 0; i < waypoints.size(); ++i) {
     if (g_quit.load() || !rclcpp::ok()) break;
@@ -687,9 +784,15 @@ int main(int argc, char ** argv)
     // quindi più probabilità di planning success per i primi waypoint lower.
     // Da qui in avanti anche le recovery dei fail useranno questa pose.
     if (lower_start_index > 0 && i == lower_start_index) {
+      RCLCPP_WARN(logger,
+        "=== Transizione upper → lower: vado a '%s' prima del polo sud ===",
+        lower_home_pose_name.c_str());
       recovery_pose_name = lower_home_pose_name;
-      go_home(move_group, recovery_pose_name, logger);
-      consecutive_plan_fails = 0;  // partenza pulita per il lower hemisphere
+      if (!go_home(move_group, recovery_pose_name, logger)) {
+        RCLCPP_ERROR(logger,
+          "Transizione FALLITA: '%s' non raggiungibile. Verifica che esista nel SRDF.",
+          lower_home_pose_name.c_str());
+      }
     }
 
     rows[i].status = WpStatus::RUNNING;
@@ -698,143 +801,345 @@ int main(int argc, char ** argv)
     g_redraw_request = true;
     render_table(rows, lock_pitch, planner_label);
 
-    // Always start each iteration from a clean constraint state
-    move_group.clearPathConstraints();
-    move_group.clearPoseTargets();
+    // Recovery strategy: ad ogni plan() fallito vai a home e ritenta lo STESSO
+    // waypoint UNA volta. Se anche il secondo tentativo fallisce → FAIL.
+    // home_retry_done tiene traccia se l'abbiamo già rifatto da home.
+    bool home_retry_done = false;
+    bool wp_resolved     = false;
 
-    bool ik_ok = true;
-    double chosen_pitch_deg = 0.0;
-    if (lock_pitch) {
-      move_group.setPoseTarget(waypoints[i], ee_link);
-    } else {
-      // Pitch libero. Strategia:
-      //   - Y_TCP della camera deve sempre puntare al centro → rotazione attorno
-      //     all'asse Y_TCP locale (Ry post-moltiplicazione) la lascia invariata.
-      //   - Per ogni offset ∈ pitch_offsets, IK con seed = stato corrente.
-      //   - Tra gli offset con IK valida, scegliamo quello che minimizza
-      //     joint_distance(soluzione, stato_corrente) + bias·|offset|.
-      //   - Effetto: traiettoria minima nei giunti tra waypoint adiacenti
-      //     (niente wrist flip / sbracciate), con preferenza moderata per
-      //     X parallelo (offset 0) a parità di costo.
-      const auto * jmg = move_group.getRobotModel()->getJointModelGroup(planning_group);
-      const moveit::core::RobotState seed_state(*move_group.getCurrentState());
+    while (!wp_resolved) {
+      if (g_quit.load() || !rclcpp::ok()) { wp_resolved = true; break; }
 
-      Eigen::Quaterniond q_target(
-        waypoints[i].orientation.w,
-        waypoints[i].orientation.x,
-        waypoints[i].orientation.y,
-        waypoints[i].orientation.z);
+      // Always start each attempt from a clean constraint state
+      move_group.clearPathConstraints();
+      move_group.clearPoseTargets();
 
-      double best_cost = std::numeric_limits<double>::infinity();
-      moveit::core::RobotState best_state(seed_state);
-      double best_offset_rad = 0.0;
-      ik_ok = false;
+      bool ik_ok = true;
+      double chosen_pitch_deg = 0.0;
+      if (lock_pitch) {
+        move_group.setPoseTarget(waypoints[i], ee_link);
+      } else {
+        const auto * jmg = move_group.getRobotModel()->getJointModelGroup(planning_group);
+        const moveit::core::RobotState seed_state(*move_group.getCurrentState());
 
-      for (double offset : pitch_offsets) {
-        Eigen::Quaterniond q_offset(Eigen::AngleAxisd(offset, Eigen::Vector3d::UnitY()));
-        Eigen::Quaterniond q_try = q_target * q_offset;  // rotazione attorno a Y locale
+        Eigen::Quaterniond q_target(
+          waypoints[i].orientation.w,
+          waypoints[i].orientation.x,
+          waypoints[i].orientation.y,
+          waypoints[i].orientation.z);
 
-        geometry_msgs::msg::Pose pose_try;
-        pose_try.position = waypoints[i].position;
-        pose_try.orientation.w = q_try.w();
-        pose_try.orientation.x = q_try.x();
-        pose_try.orientation.y = q_try.y();
-        pose_try.orientation.z = q_try.z();
+        double best_cost = std::numeric_limits<double>::infinity();
+        moveit::core::RobotState best_state(seed_state);
+        double best_offset_rad = 0.0;
+        ik_ok = false;
 
-        moveit::core::RobotState candidate(seed_state);  // IK seed = stato corrente
-        if (!candidate.setFromIK(jmg, pose_try, ee_link, ik_timeout)) continue;
+        for (double offset : pitch_offsets) {
+          Eigen::Quaterniond q_offset(Eigen::AngleAxisd(offset, Eigen::Vector3d::UnitY()));
+          Eigen::Quaterniond q_try = q_target * q_offset;
 
-        const double dq   = joint_distance(seed_state, candidate, jmg);
-        const double cost = dq + pitch_bias * std::abs(offset);
+          geometry_msgs::msg::Pose pose_try;
+          pose_try.position = waypoints[i].position;
+          pose_try.orientation.w = q_try.w();
+          pose_try.orientation.x = q_try.x();
+          pose_try.orientation.y = q_try.y();
+          pose_try.orientation.z = q_try.z();
 
-        if (cost < best_cost) {
-          best_cost = cost;
-          best_state = candidate;
-          best_offset_rad = offset;
-          ik_ok = true;
+          moveit::core::RobotState candidate(seed_state);
+          if (!candidate.setFromIK(jmg, pose_try, ee_link, ik_timeout)) continue;
+          // setFromIK aggiorna i giunti ma non sempre gli link transforms:
+          // forzare update() prima di getGlobalLinkTransform per evitare
+          // l'assertion 'checkLinkTransforms()' di MoveIt.
+          candidate.update();
+
+          if (occlusion_check && lower_start_index > 0 && i >= lower_start_index &&
+              is_arm_occluding(candidate, jmg, ee_link, cfg.center, occlusion_threshold_rad)) {
+            continue;
+          }
+
+          const double dq   = joint_distance(seed_state, candidate, jmg);
+          const double cost = dq + pitch_bias * std::abs(offset);
+
+          if (cost < best_cost) {
+            best_cost = cost;
+            best_state = candidate;
+            best_offset_rad = offset;
+            ik_ok = true;
+          }
+        }
+
+        if (ik_ok) {
+          chosen_pitch_deg = best_offset_rad * 180.0 / M_PI;
+          move_group.setJointValueTarget(best_state);
         }
       }
 
-      if (ik_ok) {
-        chosen_pitch_deg = best_offset_rad * 180.0 / M_PI;
-        move_group.setJointValueTarget(best_state);
+      moveit::planning_interface::MoveGroupInterface::Plan plan;
+      bool plan_ok = ik_ok &&
+        (move_group.plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+      if (!lock_pitch && ik_ok) {
+        RCLCPP_INFO(logger, "wp %zu (try %d): pitch chosen %+.1f deg",
+                    i, home_retry_done ? 2 : 1, chosen_pitch_deg);
       }
-    }
 
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
-    bool plan_ok = ik_ok &&
-      (move_group.plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
-    if (!lock_pitch && ik_ok) {
-      RCLCPP_INFO(logger, "wp %zu: pitch chosen %+.1f deg", i, chosen_pitch_deg);
-    }
+      if (!plan_ok) {
+        if (!home_retry_done) {
+          // Primo plan fallito → vai a home e ritenta lo stesso waypoint
+          rows[i].status = WpStatus::HOMING;
+          render_table(rows, lock_pitch, planner_label);
+          go_home(move_group, recovery_pose_name, logger);
+          home_retry_done = true;
+          rows[i].status = WpStatus::RUNNING;
+          render_table(rows, lock_pitch, planner_label);
+          continue;  // ritenta lo stesso waypoint
+        }
+        // Già ritentato da home → prova la ricerca fallback nell'intorno
+        bool fb_found = false;
 
-    if (!plan_ok) {
-      // plan() fallito: il robot NON si è mosso, niente go_home a vuoto.
-      // Marca FAIL e prova subito il prossimo waypoint dalla stessa posizione.
-      // Se accumuliamo troppi fail di fila → recovery a home come reset.
-      ++failures;
-      ++consecutive_plan_fails;
-      // Distinguiamo IK-fail (nessun pitch ha trovato IK) da plan-fail
-      // (IK ok ma OMPL non ha trovato un percorso): aiuta a capire dove
-      // attaccare i miglioramenti successivi.
-      if (!ik_ok) ++ik_failures;
-      else        ++plan_failures;
-      set_marker_color(markers_array, i, COLOR_RED);
-      publish_markers(markers_pub, markers_array);
+        if (fallback_search) {
+          RCLCPP_INFO(logger, "wp %zu: avvio ricerca fallback ...", i);
 
-      if (consecutive_plan_fails >= recovery_after_consecutive_fails) {
+          // planning_time più basso e UN solo tentativo per il fallback:
+          // se 1 attempt non basta, il candidato è probabilmente irraggiungibile,
+          // meglio passare al prossimo candidato che non sprecare 3x il tempo.
+          move_group.setPlanningTime(fallback_planning_time);
+          move_group.setNumPlanningAttempts(1);
+
+          const auto * jmg_fb = move_group.getRobotModel()->getJointModelGroup(planning_group);
+          double fallback_angle_max = (fallback_radius_mm / 1000.0) / cfg.radius;
+
+          Eigen::Vector3d wp_pos(
+            waypoints[i].position.x, waypoints[i].position.y, waypoints[i].position.z);
+          Eigen::Vector3d radial = (wp_pos - cfg.center).normalized();
+          Eigen::Vector3d ref_ax = (std::abs(radial.dot(Eigen::Vector3d::UnitZ())) < 0.9)
+                                   ? Eigen::Vector3d::UnitZ() : Eigen::Vector3d::UnitX();
+          Eigen::Vector3d tang_u = radial.cross(ref_ax).normalized();
+          Eigen::Vector3d tang_v = radial.cross(tang_u);
+
+          // Fase 1: raccogli TUTTI i candidati con IK valida (veloce, senza plan).
+          // Ogni candidato è {pose desiderata, stato IK, distanza joint, mm di offset}.
+          struct FbCandidate {
+            geometry_msgs::msg::Pose pose;
+            moveit::core::RobotState state;
+            double joint_dist;
+            double mm_off;
+            FbCandidate(const geometry_msgs::msg::Pose & p,
+                        const moveit::core::RobotState & s,
+                        double dq, double mm)
+              : pose(p), state(s), joint_dist(dq), mm_off(mm) {}
+          };
+          std::vector<FbCandidate> candidates;
+          candidates.reserve(12);
+
+          const moveit::core::RobotState seed_fb(*move_group.getCurrentState());
+
+          // FAST mode: solo i pitch offset più piccoli (max 7: 0, ±step, ±2step, ±3step).
+          // Riduce drasticamente le chiamate IK rispetto ai 25 offset del main loop.
+          size_t max_pitch_fb = std::min<size_t>(7, pitch_offsets.size());
+
+          // IK timeout più aggressivo (TRAC-IK risolve in <1ms se la pose è raggiungibile,
+          // quindi 5ms è più che sufficiente; se non risolve in 5ms, è irraggiungibile).
+          const double fb_ik_timeout = std::min(ik_timeout, 0.005);
+
+          // 2 anelli × 6 direzioni = 12 punti candidato (era 24)
+          for (int ring = 1; ring <= 2 && !g_quit.load(); ++ring) {
+            double angle_off = fallback_angle_max * ring / 2.0;
+            double mm_off    = angle_off * cfg.radius * 1000.0;
+
+            for (int d = 0; d < 6 && !g_quit.load(); ++d) {
+              double dir_angle = d * (2.0 * M_PI / 6.0);  // ogni 60°
+              Eigen::Vector3d tangent = std::cos(dir_angle) * tang_u
+                                      + std::sin(dir_angle) * tang_v;
+              Eigen::Vector3d new_radial = std::cos(angle_off) * radial
+                                         + std::sin(angle_off) * tangent;
+              new_radial.normalize();
+              Eigen::Vector3d cand_pos = cfg.center + cfg.radius * new_radial;
+              geometry_msgs::msg::Pose cand_pose = make_lookat(cand_pos, cfg.center);
+
+              // Pitch search per trovare la miglior IK su questo candidato
+              double best_cost_fb = std::numeric_limits<double>::infinity();
+              moveit::core::RobotState best_fb(seed_fb);
+              bool ik_fb = false;
+
+              Eigen::Quaterniond q_cand_base(
+                cand_pose.orientation.w, cand_pose.orientation.x,
+                cand_pose.orientation.y, cand_pose.orientation.z);
+
+              for (size_t op = 0; op < max_pitch_fb; ++op) {
+                double offset = pitch_offsets[op];
+                Eigen::Quaterniond q_off(Eigen::AngleAxisd(offset, Eigen::Vector3d::UnitY()));
+                Eigen::Quaterniond q_try = q_cand_base * q_off;
+                geometry_msgs::msg::Pose pose_try = cand_pose;
+                pose_try.orientation.w = q_try.w();
+                pose_try.orientation.x = q_try.x();
+                pose_try.orientation.y = q_try.y();
+                pose_try.orientation.z = q_try.z();
+
+                moveit::core::RobotState cand_state(seed_fb);
+                if (!cand_state.setFromIK(jmg_fb, pose_try, ee_link, fb_ik_timeout)) continue;
+                cand_state.update();
+
+                if (occlusion_check && lower_start_index > 0 && i >= lower_start_index &&
+                    is_arm_occluding(cand_state, jmg_fb, ee_link, cfg.center, occlusion_threshold_rad)) {
+                  continue;
+                }
+
+                double dq   = joint_distance(seed_fb, cand_state, jmg_fb);
+                double cost = dq + pitch_bias * std::abs(offset);
+                if (cost < best_cost_fb) {
+                  best_cost_fb = cost;
+                  best_fb      = cand_state;
+                  ik_fb        = true;
+                }
+              }
+
+              if (ik_fb) {
+                double dq_fb = joint_distance(seed_fb, best_fb, jmg_fb);
+                candidates.emplace_back(cand_pose, best_fb, dq_fb, mm_off);
+              }
+            }
+          }
+
+          RCLCPP_INFO(logger,
+            "  wp %zu fallback: %zu candidati con IK valida, provo plan() sui migliori %d",
+            i, candidates.size(), fallback_max_plan_attempts);
+
+          // Ordina per joint_distance crescente (più vicini al robot prima)
+          std::sort(candidates.begin(), candidates.end(),
+            [](const FbCandidate & a, const FbCandidate & b) {
+              return a.joint_dist < b.joint_dist;
+            });
+
+          // Fase 2: prova plan() solo sui top N
+          int attempts = std::min(static_cast<int>(candidates.size()), fallback_max_plan_attempts);
+          for (int k = 0; k < attempts && !fb_found && !g_quit.load(); ++k) {
+            const auto & c = candidates[k];
+            RCLCPP_INFO(logger,
+              "  wp %zu fallback: plan tentativo %d/%d (offset %.0f mm, dq %.3f)",
+              i, k + 1, attempts, c.mm_off, c.joint_dist);
+
+            move_group.clearPathConstraints();
+            move_group.clearPoseTargets();
+            move_group.setJointValueTarget(c.state);
+
+            moveit::planning_interface::MoveGroupInterface::Plan fb_plan;
+            if (move_group.plan(fb_plan) != moveit::core::MoveItErrorCode::SUCCESS) continue;
+
+            if (move_group.execute(fb_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+              go_home(move_group, recovery_pose_name, logger);
+              continue;
+            }
+
+            // Fallback raggiunto
+            fb_found = true;
+            ++successes;
+            rows[i].fallback      = c.pose;
+            rows[i].fallback_set  = true;
+            rows[i].status        = WpStatus::FALLBACK_ORIGIN;
+
+            set_marker_color(markers_array, i, COLOR_GRAY);
+            set_marker_small(markers_array, i);
+
+            int fb_id = static_cast<int>(waypoints.size()) * 2 + static_cast<int>(i) * 2;
+            Marker fb_sphere = make_sphere_marker(fb_id,     c.pose, global_frame, COLOR_BLUE);
+            Marker fb_arrow  = make_arrow_marker (fb_id + 1, c.pose, cfg.center,   global_frame, COLOR_BLUE);
+            fb_sphere.ns = "fallback_waypoints";
+            fb_arrow.ns  = "fallback_orientations";
+            markers_array.markers.push_back(fb_sphere);
+            markers_array.markers.push_back(fb_arrow);
+
+            publish_markers(markers_pub, markers_array);
+            render_table(rows, lock_pitch, planner_label);
+          }
+
+          // Ripristina i parametri di planning normali per i waypoint successivi
+          move_group.setPlanningTime(planning_time);
+          move_group.setNumPlanningAttempts(planning_attempts);
+        }
+
+        if (!fb_found) {
+          // Niente da fare: né plan da home né fallback nell'intorno
+          ++failures;
+          if (!ik_ok) ++ik_failures;
+          else        ++plan_failures;
+          set_marker_color(markers_array, i, COLOR_RED);
+          publish_markers(markers_pub, markers_array);
+          rows[i].status = WpStatus::FAIL;
+          render_table(rows, lock_pitch, planner_label);
+        }
+
+        wp_resolved = true;
+        break;
+      }
+
+      moveit::core::MoveItErrorCode exec_code = move_group.execute(plan);
+      bool exec_ok = (exec_code == moveit::core::MoveItErrorCode::SUCCESS);
+
+      if (!exec_ok) {
+        // execute() fallito: robot fermo a metà traiettoria → home per sicurezza.
+        // Logghiamo il codice errore per capire perché (tolerance, goal_time, protective_stop...).
+        RCLCPP_ERROR(logger,
+          "wp %zu: execute() FALLITO con codice MoveIt = %d (%s). "
+          "Verifica il terminale del bringup per il messaggio del controller (es. 'goal tolerance violated', 'protective stop').",
+          i, static_cast<int>(exec_code.val), exec_code.message.c_str());
+
+        ++failures;
+        ++exec_failures;
         rows[i].status = WpStatus::HOMING;
+        set_marker_color(markers_array, i, COLOR_RED);
+        publish_markers(markers_pub, markers_array);
         render_table(rows, lock_pitch, planner_label);
         go_home(move_group, recovery_pose_name, logger);
-        consecutive_plan_fails = 0;  // reset dopo il recovery
+        rows[i].status = WpStatus::FAIL;
+        render_table(rows, lock_pitch, planner_label);
+        wp_resolved = true;
+        break;
       }
-      rows[i].status = WpStatus::FAIL;
-      render_table(rows, lock_pitch, planner_label);
-      continue;
-    }
 
-    // plan() ok → contatore di fail consecutivi azzerato.
-    consecutive_plan_fails = 0;
+      // Reached
+      ++successes;
+      rows[i].status = WpStatus::DONE;
 
-    bool exec_ok = (move_group.execute(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+      auto current = move_group.getCurrentPose(ee_link);
+      rows[i].actual = current.pose;
+      rows[i].actual_set = true;
 
-    if (!exec_ok) {
-      // execute() fallito: il robot potrebbe essersi fermato a metà traiettoria
-      // in una posizione incerta. go_home come fallback di sicurezza.
-      ++failures;
-      ++exec_failures;
-      rows[i].status = WpStatus::HOMING;
-      set_marker_color(markers_array, i, COLOR_RED);
+      double diff_deg = quat_angle_diff(rows[i].target.orientation, current.pose.orientation)
+                        * 180.0 / M_PI;
+      rows[i].reoriented = (!lock_pitch && diff_deg > 2.0);
+
+      set_marker_color(markers_array, i, COLOR_GREEN);
       publish_markers(markers_pub, markers_array);
       render_table(rows, lock_pitch, planner_label);
-      go_home(move_group, recovery_pose_name, logger);
-      rows[i].status = WpStatus::FAIL;
-      render_table(rows, lock_pitch, planner_label);
-      continue;
+      wp_resolved = true;
     }
+  }
 
-    // Reached: query the actual pose to detect orientation differences
-    ++successes;
-    rows[i].status = WpStatus::DONE;
 
-    auto current = move_group.getCurrentPose(ee_link);
-    rows[i].actual = current.pose;
-    rows[i].actual_set = true;
+  // Calcolo tempo totale di scansione (dal primo waypoint all'ultimo)
+  auto scan_end_time = std::chrono::steady_clock::now();
+  double scan_duration_s = std::chrono::duration<double>(scan_end_time - scan_start_time).count();
 
-    // Threshold: 2 degrees of total quaternion difference => "reoriented"
-    double diff_deg = quat_angle_diff(rows[i].target.orientation, current.pose.orientation)
-                      * 180.0 / M_PI;
-    rows[i].reoriented = (!lock_pitch && diff_deg > 2.0);
+  // Ritorno a home a fine scansione (se non killato)
+  if (!g_quit.load() && rclcpp::ok()) {
+    RCLCPP_WARN(logger, "=== Scan completato, ritorno a '%s' ===", home_pose_name.c_str());
+    go_home(move_group, home_pose_name, logger);
+  }
 
-    set_marker_color(markers_array, i, COLOR_GREEN);
-    publish_markers(markers_pub, markers_array);
-    render_table(rows, lock_pitch, planner_label);
+  // Conteggio dei fallback effettivamente trovati nel main loop
+  int fallback_total = 0;
+  for (const auto & r : rows) {
+    if (r.status == WpStatus::FALLBACK_ORIGIN) ++fallback_total;
   }
 
   // Final summary line, leaves table on screen
-  std::printf("\n%sScan complete:%s %d / %zu reached, %d failed (%d IK, %d plan, %d execute).\n",
+  std::printf("\n%sScan complete:%s %d / %zu reached, %d failed (%d IK, %d plan, %d execute).",
     ansi::BOLD, ansi::RESET, successes, waypoints.size(), failures,
     ik_failures, plan_failures, exec_failures);
+  if (fallback_total > 0) {
+    std::printf("  Fallback: %d punti alternativi.", fallback_total);
+  }
+  std::printf("\n%sTempo scansione:%s %.1f s (%.1f min)\n",
+    ansi::BOLD, ansi::RESET, scan_duration_s, scan_duration_s / 60.0);
   std::fflush(stdout);
 
   // Cleanup

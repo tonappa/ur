@@ -78,7 +78,9 @@ static std::vector<geometry_msgs::msg::Pose> generate_hemisphere(
   int points_per_ring,
   int num_arc,
   int points_per_arc,
-  double equator_exclusion)
+  double equator_exclusion,
+  bool stagger_rings,
+  bool adaptive_rings)
 {
   std::vector<geometry_msgs::msg::Pose> poses;
 
@@ -93,27 +95,49 @@ static std::vector<geometry_msgs::msg::Pose> generate_hemisphere(
   poses.push_back(make_look_at_pose(sphere_point(center, radius, pole_theta, 0.0), center));
 
   if (direction == SCAN_LATITUDINAL) {
-    // Ring-by-ring: num_rings horizontal circles between pole and equator
+    // Ring-by-ring: num_rings horizontal circles between pole and equator.
+    // Boustrophedon (serpentine): odd rings go forward (phi 0 -> 2pi),
+    // even rings go backward (phi 2pi -> 0), so the robot doesn't have to
+    // jump back to phi=0 at the start of each new ring.
     double d_theta = sign * range / num_rings;
 
     for (int ring = 1; ring <= num_rings; ++ring) {
       double theta = pole_theta + ring * d_theta;
+      bool reverse = (ring % 2 == 0);
 
-      for (int pt = 0; pt < points_per_ring; ++pt) {
-        double phi = pt * 2.0 * M_PI / points_per_ring;
+      // Adaptive: scale points by sin(theta) so coverage is roughly uniform.
+      // points_per_ring is the reference density at the equator (theta = PI/2).
+      // Near the pole sin(theta) is small -> fewer points; near equator -> more.
+      int n_points = points_per_ring;
+      if (adaptive_rings) {
+        n_points = std::max(1, (int)std::round(points_per_ring * std::sin(theta)));
+      }
+
+      // Half step and stagger are computed per-ring because n_points may vary
+      double half_step     = M_PI / n_points;
+      double stagger_offset = (stagger_rings && ring % 2 == 0) ? half_step : 0.0;
+
+      for (int pt = 0; pt < n_points; ++pt) {
+        // If reverse, walk the points from last to first
+        int actual_pt = reverse ? (n_points - 1 - pt) : pt;
+        double phi = actual_pt * 2.0 * M_PI / n_points + stagger_offset;
         poses.push_back(make_look_at_pose(sphere_point(center, radius, theta, phi), center));
       }
     }
 
   } else {
-    // Meridian-by-meridian: num_arc vertical slices, points_per_arc points each
+    // Meridian-by-meridian: num_arc vertical slices, points_per_arc points each.
+    // Boustrophedon: odd meridians go pole -> equator, even go equator -> pole.
     double d_theta = sign * range / points_per_arc;
 
     for (int meridian = 0; meridian < num_arc; ++meridian) {
       double phi = meridian * 2.0 * M_PI / num_arc;
+      bool reverse = (meridian % 2 == 1);
 
       for (int pt = 1; pt <= points_per_arc; ++pt) {
-        double theta = pole_theta + pt * d_theta;
+        // If reverse, walk the arc points from equator end back toward the pole
+        int actual_pt = reverse ? (points_per_arc + 1 - pt) : pt;
+        double theta = pole_theta + actual_pt * d_theta;
         poses.push_back(make_look_at_pose(sphere_point(center, radius, theta, phi), center));
       }
     }
@@ -135,7 +159,7 @@ std::vector<geometry_msgs::msg::Pose> generate_waypoints(const ScanConfig & cfg)
       cfg.center, cfg.radius, true, cfg.direction,
       cfg.num_rings, cfg.points_per_ring,
       cfg.num_arc,   cfg.points_per_arc,
-      cfg.equator_exclusion_rad);
+      cfg.equator_exclusion_upper_rad, cfg.stagger_rings, cfg.adaptive_rings);
 
     poses.insert(poses.end(), upper.begin(), upper.end());
   }
@@ -146,7 +170,7 @@ std::vector<geometry_msgs::msg::Pose> generate_waypoints(const ScanConfig & cfg)
       cfg.center, cfg.radius, false, cfg.direction,
       cfg.num_rings, cfg.points_per_ring,
       cfg.num_arc,   cfg.points_per_arc,
-      cfg.equator_exclusion_rad);
+      cfg.equator_exclusion_lower_rad, cfg.stagger_rings, cfg.adaptive_rings);
 
     poses.insert(poses.end(), lower.begin(), lower.end());
   }
