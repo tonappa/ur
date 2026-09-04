@@ -10,6 +10,8 @@ find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
+find_package(moveit_ros_planning REQUIRED)
+find_package(moveit_msgs REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -43,13 +45,32 @@ ament_target_dependencies(scan_executor_node
   std_srvs
 )
 
+# ── Nodo esecutore v2 (planning scene locale + planner di riserva) ───────────
+# scan_executor_node resta invariato come backup; questo e' l'evoluzione.
+add_executable(scan_sequence_node
+  src/scan_sequence_node.cpp
+)
+target_link_libraries(scan_sequence_node
+  sphere_waypoint_generator
+)
+ament_target_dependencies(scan_sequence_node
+  rclcpp
+  geometry_msgs
+  visualization_msgs
+  moveit_ros_planning_interface
+  moveit_ros_planning
+  moveit_msgs
+  Eigen3
+  std_srvs
+)
+
 # ── Install ───────────────────────────────────────────────────────────────────
 install(
   DIRECTORY include/
   DESTINATION include
 )
 install(
-  TARGETS sphere_waypoint_generator scan_executor_node
+  TARGETS sphere_waypoint_generator scan_executor_node scan_sequence_node
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

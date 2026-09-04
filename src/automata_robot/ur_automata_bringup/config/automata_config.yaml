@@ -16,7 +16,7 @@ planning:
 
 scan:
   #center: [0.133, 0.40, 0.504]   # centro del supporto, in metri, nel frame `planning.global_frame` y era 40
-  center: [0.133, 0.30, 0.504]   # centro del supporto, in metri, nel frame `planning.global_frame` y era 40
+  center: [0.133, 0.40, 0.504]   # centro del supporto, in metri, nel frame `planning.global_frame` y era 40
   platform_sim: false   # true: scena con disco+3 gambe simulati | false: usa il mesh STL meshes/platform.stl
   radius: 0.30               # raggio della sfera di waypoint, in metri
   hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)
@@ -80,7 +80,14 @@ scan:
   #   pilz_lin → Pilz LIN, lineare in cartesiano (rischio singolarità)
   # NB: pilz_* IGNORA il path constraint usato da lock_pitch=false.
   # NB: per usare pilz_* serve `pilz_industrial_motion_planner_planning.yaml` in ur_automata_moveit_config/config.
-  planner: ompl
+  planner: pilz_ptp
+
+  # Planner di riserva (usato solo da scan_sequence_node): se il primario
+  # fallisce, si ritenta con questo. Combinazione tipica:
+  #   planner: pilz_ptp   (deterministico, ~10 ms, retta in joint space)
+  #   fallback_planner: ompl   (solo quando la retta in joint space collide)
+  # "none" = nessun planner di riserva.
+  fallback_planner: ompl
 
   # Algoritmo OMPL (usato solo se planner=ompl, ignorato altrimenti).
   # Opzioni tipiche dell'ompl_planning.yaml upstream UR:
