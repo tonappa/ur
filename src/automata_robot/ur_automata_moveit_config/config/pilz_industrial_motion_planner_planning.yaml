@@ -7,4 +7,11 @@ request_adapters:
   - default_planning_request_adapters/CheckStartStateBounds
   - default_planning_request_adapters/CheckStartStateCollision
 
+# I request_adapters controllano solo lo stato di partenza. Pilz PTP NON
+# controlla le collisioni lungo la retta in joint space: lo fa ValidateSolution
+# (response adapter). Senza, una PTP puo' attraversare un ostacolo.
+response_adapters:
+  - default_planning_response_adapters/ValidateSolution
+  - default_planning_response_adapters/DisplayMotionPath
+
 default_planner_config: PTP

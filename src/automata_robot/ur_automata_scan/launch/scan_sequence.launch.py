@@ -39,6 +39,12 @@ def generate_launch_description():
     s = cfg["scan"]
     kinematics_yaml = _load_kinematics_yaml()
 
+    # Enumerazione: ogni posa ha al massimo 8 soluzioni discrete, quindi non
+    # serve minimizzare la distanza dal seed (solve_type Distance usa tutto il
+    # timeout). Speed ritorna la soluzione del ramo piu' vicino al seed appena
+    # la trova: 10-50x piu' veloce. move_group resta con la sua kinematics.yaml.
+    kinematics_yaml[p["group"]]["solve_type"] = "Speed"
+
     scan_node = Node(
         package="ur_automata_scan",
         executable="scan_sequence_node",
@@ -82,6 +88,7 @@ def generate_launch_description():
             "scan_pitch_search_step_deg":  s["pitch_search_step_deg"],
             "scan_pitch_xparallel_bias":   s["pitch_xparallel_bias"],
             "scan_ik_timeout":             s["ik_timeout"],
+            "scan_enum_ik_timeout":        s["enum_ik_timeout"],
             "scan_planning_time":          s["planning_time"],
             "scan_planning_attempts":      s["planning_attempts"],
             },

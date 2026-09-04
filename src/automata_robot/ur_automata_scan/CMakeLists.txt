@@ -45,13 +45,23 @@ ament_target_dependencies(scan_executor_node
   std_srvs
 )
 
-# ── Nodo esecutore v2 (planning scene locale + planner di riserva) ───────────
+# ── Libreria DP per la scelta della sequenza (pura, solo STL) ─────────────────
+add_library(scan_sequence_planner
+  src/scan_sequence_planner.cpp
+)
+target_include_directories(scan_sequence_planner PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+# ── Nodo esecutore v2 (enumerazione offline + DP + planner di riserva) ────────
 # scan_executor_node resta invariato come backup; questo e' l'evoluzione.
 add_executable(scan_sequence_node
   src/scan_sequence_node.cpp
 )
 target_link_libraries(scan_sequence_node
   sphere_waypoint_generator
+  scan_sequence_planner
 )
 ament_target_dependencies(scan_sequence_node
   rclcpp
@@ -70,7 +80,7 @@ install(
   DESTINATION include
 )
 install(
-  TARGETS sphere_waypoint_generator scan_executor_node scan_sequence_node
+  TARGETS sphere_waypoint_generator scan_sequence_planner scan_executor_node scan_sequence_node
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -80,5 +90,11 @@ install(
   DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
 )
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_sequence_planner test/test_sequence_planner.cpp)
+  target_link_libraries(test_sequence_planner scan_sequence_planner)
+endif()
 
 ament_package()
