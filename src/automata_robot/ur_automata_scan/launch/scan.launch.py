@@ -42,7 +42,6 @@ def generate_launch_description():
     scan_node = Node(
         package="ur_automata_scan",
         executable="scan_executor_node",
-        name="scan_executor_node",
         output="screen",
         emulate_tty=True,
         parameters=[

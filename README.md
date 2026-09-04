@@ -27,7 +27,8 @@ resta invariato.
 7. [Avvio in simulazione](#7-avvio-in-simulazione)
 8. [Avvio sul robot reale](#8-avvio-sul-robot-reale)
 9. [Eseguire una scansione](#9-eseguire-una-scansione)
-10. [Riferimenti](#10-riferimenti)
+10. [Chiusura e cleanup della sessione](#10-chiusura-e-cleanup-della-sessione)
+11. [Riferimenti](#11-riferimenti)
 
 ---
 
@@ -325,6 +326,16 @@ ros2 launch ur_automata_scene scene.launch.py
 ros2 launch ur_automata_scan scan.launch.py
 ```
 
+Lo scan **parte sempre in pausa**: il nodo stampa la tabella dei waypoint e
+aspetta il via libera. Lanciato via `ros2 launch` la tastiera è disabilitata
+(stdin non è un TTY), quindi lo start arriva dal service, da un terzo terminale
+nel container:
+
+```bash
+ros2 service call /scan_executor_node/start std_srvs/srv/Trigger {}
+ros2 service call /scan_executor_node/pause std_srvs/srv/Trigger {}
+```
+
 Il nodo `scan_executor_node` carica i parametri dalla sezione `scan` di
 `automata_config.yaml` e la `kinematics.yaml` di `ur_automata_moveit_config`
 (necessaria perché l'IK lato client funzioni — senza, `setFromIK` fallisce in
@@ -333,11 +344,65 @@ fallback e planner direttamente nel YAML.
 
 ---
 
-## 10. Riferimenti
+## 10. Chiusura e cleanup della sessione
+
+**Chiudere il terminale non chiude i processi.** Se esci da un `docker exec` (o
+chiudi la finestra) senza fermare il launch, la bash muore ma i suoi figli
+sopravvivono e vengono riadottati da PID 1 dentro il container: restano vivi,
+in ascolto sul DDS, e continuano a rispondere.
+
+Il sintomo tipico è un secondo `move_group` rimasto in piedi da una sessione
+precedente. Due action server sulla stessa action rispondono entrambi allo
+stesso goal, e il client scarta la risposta duplicata:
+
+```
+[ERROR] [...rclcpp_action]: unknown goal response, ignoring...
+[ERROR] [...rclcpp_action]: unknown result response, ignoring...
+```
+
+con `execute()` che resta appeso e i waypoint fermi su RUNNING.
+
+### Procedura
+
+**1. Ctrl-C nel terminale del launch, e aspetta la sequenza di shutdown.**
+`ros2 launch` propaga il SIGINT ai figli, ma serve dargli il tempo di farlo.
+
+**2. Verifica prima di rilanciare** (dentro il container):
+
+```bash
+pgrep -af 'ros2 launch|move_group|ros2_control_node|rviz2'
+```
+
+Output vuoto = pulito. Qualsiasi riga che compare è un processo ancora vivo.
+
+**3. Se resta qualcosa:**
+
+```bash
+pkill -f ur_automata_bringup; pkill -f move_group
+pkill -f rviz2; pkill -f ros2_control_node
+```
+
+**4. Opzione nucleare**, dall'host: butta giù il container, muore tutto quello
+che contiene (URSim gira in un container separato e sopravvive):
+
+```bash
+./run.sh down
+```
+
+### Diagnostica rapida
+
+```bash
+ros2 action info /execute_trajectory   # deve elencare UN solo action server
+ros2 node list                         # nessun nome duplicato
+ps -eo pid,ppid,etime,cmd | grep ros2  # PPID 1 = processo orfano di una vecchia sessione
+```
+
+---
+
+## 11. Riferimenti
 
 - **`ur.md`** — tutorial lungo (IT): architettura, bring-up, scrittura di un
   nodo C++, da zero al robot reale.
-- **`CLAUDE.md`** — note operative sul workspace.
 - Documentazione ufficiale UR ROS 2:
   <https://docs.universal-robots.com/Universal_Robots_ROS2_Documentation>
 - UR ROS 2 Driver: <https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver>

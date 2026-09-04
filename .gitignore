@@ -3,5 +3,4 @@ install/
 log/
 ur.md
 CLAUDE.md
-# Claude Code local settings (per-utente, non condiviso)
-.claude/settings.local.json
+.claude/
