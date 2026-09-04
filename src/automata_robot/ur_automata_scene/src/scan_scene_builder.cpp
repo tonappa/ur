@@ -259,7 +259,7 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
     // scale=0.001).
     geometry_msgs::msg::Pose platform_pose;
     platform_pose.position.x = 0.133;
-    platform_pose.position.y = 0.50;
+    platform_pose.position.y = 0.60;
     platform_pose.position.z = 0.0;
     Eigen::Quaterniond q_rot =
         Eigen::AngleAxisd(-M_PI / 2.0, Eigen::Vector3d::UnitZ()) *
