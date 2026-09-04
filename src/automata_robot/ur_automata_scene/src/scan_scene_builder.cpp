@@ -241,7 +241,7 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
     // Mesh STL della piattaforma reale. Posizionato a (0,0,0) con orientamento
     // identità — se la mesh non combacia, modifica platform_pose qui sotto.
     std::string platform_mesh_path =
-        "file://" + package_path + "/meshes/platform.stl";
+        "file://" + package_path + "/meshes/disk.stl";
 
     platform.header.frame_id = global_frame;
     platform.header.stamp = stamp;
@@ -253,16 +253,17 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
         load_mesh_msg(platform_mesh_path, 0.001);
     platform.meshes.push_back(platform_mesh);
 
-    // Posizione: 60 cm in avanti rispetto alla base del robot (asse Y, in METRI).
-    // Rotazione composta: +90° attorno X, poi -90° attorno Z (entrambi nel frame world).
-    // NB: la mesh è già scalata in metri (load_mesh_msg scale=0.001).
+    // Posizione: 60 cm in avanti rispetto alla base del robot (asse Y, in
+    // METRI). Rotazione composta: +90° attorno X, poi -90° attorno Z (entrambi
+    // nel frame world). NB: la mesh è già scalata in metri (load_mesh_msg
+    // scale=0.001).
     geometry_msgs::msg::Pose platform_pose;
     platform_pose.position.x = 0.133;
-    platform_pose.position.y = 0.60;
+    platform_pose.position.y = 0.50;
     platform_pose.position.z = 0.0;
     Eigen::Quaterniond q_rot =
         Eigen::AngleAxisd(-M_PI / 2.0, Eigen::Vector3d::UnitZ()) *
-        Eigen::AngleAxisd( M_PI / 2.0, Eigen::Vector3d::UnitX());
+        Eigen::AngleAxisd(M_PI / 2.0, Eigen::Vector3d::UnitX());
     platform_pose.orientation.x = q_rot.x();
     platform_pose.orientation.y = q_rot.y();
     platform_pose.orientation.z = q_rot.z();

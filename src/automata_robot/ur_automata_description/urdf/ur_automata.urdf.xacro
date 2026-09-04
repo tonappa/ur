@@ -100,7 +100,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://ur_automata_description/meshes/ee_automata_V1.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="package://ur_automata_description/meshes/ee_automata_V2.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="aluminum">
         <color rgba="0.78 0.78 0.80 1.0"/>
@@ -109,7 +109,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://ur_automata_description/meshes/ee_automata_V1.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="package://ur_automata_description/meshes/ee_automata_V2.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>

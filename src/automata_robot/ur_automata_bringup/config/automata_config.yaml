@@ -1,5 +1,5 @@
 robot:
-  ip: 192.168.1.97          # UR (o URSim) IP address URSIM 192.168.56.101
+  ip: 192.168.56.101         # UR 192.168.1.97 (o URSim) IP address URSIM 192.168.56.101
   type: ur5                 # ur3, ur3e, ur5, ur5e, ur10, ur10e, ur16e
 
 planning:
@@ -15,7 +15,8 @@ planning:
   use_rviz: true                       # launch RViz alongside MoveIt
 
 scan:
-  center: [0.133, 0.40, 0.504]   # centro del supporto, in metri, nel frame `planning.global_frame` y era 40
+  #center: [0.133, 0.40, 0.504]   # centro del supporto, in metri, nel frame `planning.global_frame` y era 40
+  center: [0.133, 0.30, 0.504]   # centro del supporto, in metri, nel frame `planning.global_frame` y era 40
   platform_sim: false   # true: scena con disco+3 gambe simulati | false: usa il mesh STL meshes/platform.stl
   radius: 0.30               # raggio della sfera di waypoint, in metri
   hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)
