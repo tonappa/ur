@@ -1,412 +1,493 @@
-# ur — Workspace ROS 2 per cella UR5e "ur_automata"
+# ur — workspace ROS 2 per la cella `ur_automata`
 
-Workspace ROS 2 **Jazzy** per guidare un Universal Robots UR5e (la cella
-`ur_automata`) con **MoveIt 2**, sia in simulazione (URSim / Gazebo) sia sul
-robot reale. Lo sviluppo avviene dentro un container Docker: la root del repo
-viene montata nel container come workspace colcon e compilata lì dentro.
+Workspace ROS 2 **Jazzy** per pilotare un braccio Universal Robots (cella
+`ur_automata`) con **MoveIt 2**, in simulazione **URSim** o sul **robot reale**.
+Tutto lo sviluppo avviene dentro un container Docker: la root del repo viene
+montata nel container e compilata lì con `colcon`.
 
-L'interfaccia ROS esposta (topic `/joint_states`, action
-`/scaled_joint_trajectory_controller/follow_joint_trajectory`, ecc.) è
-**identica** tra simulazione e robot reale. Cambia solo *quale launch file*
-avvii e l'IP del controller: il resto (controller, MoveIt, nodi applicativi)
-resta invariato.
+L'interfaccia ROS è la stessa nei due casi — stesso `/joint_states`, stessa
+action `/scaled_joint_trajectory_controller/follow_joint_trajectory`, stessi
+controller, stesso MoveIt. Cambia solo **l'IP del controller** e il **modello di
+robot** dichiarato: sotto, il driver `ur_robot_driver` parla con un controller
+UR vero o con quello simulato da URSim, e non se ne accorge nessuno più in alto.
 
-> Per il *perché* dietro l'architettura, i launch file e i controller, vedi il
-> tutorial lungo `ur.md` (in italiano).
-
----
-
-## Indice
-
-1. [Requisiti host](#1-requisiti-host)
-2. [Clone del repository](#2-clone-del-repository)
-3. [Build dell'immagine Docker](#3-build-dellimmagine-docker)
-4. [Avvio del container e build del workspace](#4-avvio-del-container-e-build-del-workspace)
-5. [Struttura dei pacchetti](#5-struttura-dei-pacchetti)
-6. [Configurazione centrale (`automata_config.yaml`)](#6-configurazione-centrale-automata_configyaml)
-7. [Avvio in simulazione](#7-avvio-in-simulazione)
-8. [Avvio sul robot reale](#8-avvio-sul-robot-reale)
-9. [Eseguire una scansione](#9-eseguire-una-scansione)
-10. [Chiusura e cleanup della sessione](#10-chiusura-e-cleanup-della-sessione)
-11. [Riferimenti](#11-riferimenti)
+Applicazione principale: una **scansione sferica** dell'oggetto posato sulla
+piattaforma. Il TCP percorre una griglia di waypoint su una sfera centrata
+sull'oggetto, puntandolo sempre; a ogni waypoint si potrà scattare una foto.
 
 ---
 
-## 1. Requisiti host
+## 1. Prerequisiti sulla macchina host
 
-- **Linux** (testato su Ubuntu) con kernel recente.
-- **Docker** + **Docker Compose v2** (`docker compose`, non `docker-compose`).
-- **NVIDIA Container Toolkit** (`nvidia-container-toolkit`) per il passthrough
-  GPU (RViz/Gazebo). Senza GPU NVIDIA va rimossa la sezione `deploy` da
-  `docker-compose.yaml`.
-- Utente host nei gruppi `audio` e `video` (lo script `run.sh` legge i loro GID).
-- `xhost` / X11 per il forwarding delle GUI (RViz, Gazebo).
-
-> **Nota kernel ≥ 6.15:** URSim fallisce all'avvio (`URControl ENOSYS on
-> socket()`). Usa lo script `start_ursim_seccomp.sh` incluso (vedi
-> [§7](#7-avvio-in-simulazione)), non lo `start_ursim.sh` ufficiale.
-
----
-
-## 2. Clone del repository
-
-Il workspace usa **git submodule** per i pacchetti upstream di Universal Robots
-(pinnati al branch `jazzy`). Clona con `--recursive`:
+- Docker Engine + plugin `docker compose`
+- `nvidia-container-toolkit` (il compose chiede la GPU NVIDIA; senza, va rimossa
+  la sezione `deploy.resources.reservations.devices` da `docker-compose.yaml`)
+- X11 in esecuzione (per RViz), `xauth`, `xhost`
+- utente host nei gruppi `audio` e `video` (`run.sh` legge i loro GID)
 
 ```bash
-git clone --recursive <URL_DEL_REPO> ur
-cd ur
+sudo usermod -aG audio,video $USER   # poi ri-login
 ```
 
-Se hai già clonato senza `--recursive`, inizializza i submodule a mano:
+## 2. Clone del repo
+
+I pacchetti UR upstream sono submoduli git, servono per riferimento e per
+eventuali patch (l'immagine Docker installa comunque i `.deb` di `ros-jazzy-ur`):
 
 ```bash
+git clone <url-del-repo> ur
+cd ur
 git submodule update --init --recursive
 ```
 
-### Submodule inclusi (`src/utils/`)
+## 3. Immagine e container Docker
 
-| Submodule | Repo upstream | Branch |
-|---|---|---|
-| `Universal_Robots_ROS2_Description` | [UniversalRobots/Universal_Robots_ROS2_Description](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description) | `jazzy` |
-| `Universal_Robots_ROS2_Driver` | [UniversalRobots/Universal_Robots_ROS2_Driver](https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver) | `jazzy` |
-| `src/ur_description` | [UniversalRobots/Universal_Robots_ROS2_Description](https://github.com/UniversalRobots/Universal_Robots_ROS2_Description) | `jazzy` |
-
-> I submodule vanno trattati come **codice vendor read-only**: servono come
-> riferimento / per eventuali patch. L'immagine Docker installa già via apt le
-> versioni binarie (`ros-jazzy-ur`, `ros-jazzy-ur-simulation-gz`, ecc.), quindi
-> i submodule **non sono strettamente necessari** per compilare il workspace.
-
----
-
-## 3. Build dell'immagine Docker
-
-Tutto è guidato da `run.sh`, che ricava automaticamente i nomi
-`IMAGE_NAME`/`CONTAINER_NAME` dal nome della cartella corrente ed esporta
-UID/GID host, GID audio/video, variabili X11/Pulse e i mount di
-bash-history/VSCode prima di invocare `docker compose`.
+`run.sh` fa da wrapper su `docker compose`: ricava i nomi dalla cartella
+corrente, esporta UID/GID dell'utente host, le variabili X11/Pulse, i GID di
+audio/video e i mount di bash-history e VSCode.
 
 ```bash
-./run.sh build      # build con cache (veloce)
-./run.sh rebuild    # build --no-cache (da zero, lento)
+./run.sh build     # costruisce l'immagine (con cache)
+./run.sh rebuild   # ricostruisce da zero (--no-cache, lento)
+./run.sh run       # apre una shell interattiva nel container
+./run.sh down      # ferma e rimuove il container
 ```
 
-L'immagine (`ros:jazzy` come base) installa tra l'altro:
-`ros-jazzy-ur`, `ros-jazzy-ur-simulation-gz`, `ros-jazzy-moveit`,
-`ros-jazzy-ros-gz`, `ros-jazzy-rviz2`, `ros-jazzy-plotjuggler-ros`,
-`ros-jazzy-rqt-runtime-monitor`, `ros-jazzy-trac-ik-kinematics-plugin`, più i
-pacchetti Python in `docker/requirements.txt` (`pyquaternion`, `paho-mqtt`).
+Con la cartella del repo chiamata `ur` si ottiene:
 
-Il container gira con `network_mode: host` (necessario per la discovery DDS di
-ROS 2 e per il link TCP/IP verso il controller UR), `ROS_DOMAIN_ID=44`,
-priorità real-time (`SYS_NICE`, `rtprio: 99`) e passthrough GPU NVIDIA.
+| | valore |
+|---|---|
+| immagine | `ur_ws:jazzy` |
+| container | `ur_container` |
+| workspace nel container | `/home/ros/ur` |
+| rete | `host` (necessaria per il discovery DDS e per il TCP/IP verso il robot) |
+| `ROS_DOMAIN_ID` | `44` |
 
----
-
-## 4. Avvio del container e build del workspace
+**Seconda shell nello stesso container** (serve quasi sempre: bringup in un
+terminale, scan nell'altro). `docker exec` non passa dall'entrypoint, quindi va
+fatto il source a mano:
 
 ```bash
-./run.sh run        # esegue `xhost +local:docker` poi `docker compose run`
+docker exec -it ur_container bash
+source /opt/ros/jazzy/setup.bash
+source /home/ros/ur/install/setup.bash
 ```
 
-Sei ora dentro il container, nella cartella di lavoro `~/ros/ur` (la root del
-repo montata come volume). L'`entrypoint.sh` ha già sorgenti `setup.bash` di
-ROS, lanciato `apt update/upgrade` e `rosdep install`.
+L'entrypoint della shell principale, invece, fa da solo: source di ROS, source
+di `install/setup.bash` se esiste, `apt update/upgrade` e
+`rosdep install --from-paths src --ignore-src -r -y --skip-keys "moveit_resources"`.
 
-**Compila il workspace** (questa è la riga esatta che l'entrypoint stampa se il
-workspace non è ancora compilato):
+## 4. Compilare il workspace (dentro il container)
 
 ```bash
+cd /home/ros/ur
 colcon build --cmake-args -DCMAKE_CXX_FLAGS="-w" --executor sequential
-```
-
-Poi **ri-sorgi** l'overlay:
-
-```bash
 source install/setup.bash
 ```
 
-Comandi utili:
+Un solo pacchetto:
 
 ```bash
-# compila un solo pacchetto
-colcon build --packages-select ur_automata_moveit_config
-
-# compila un pacchetto e tutto ciò che ne dipende
-colcon build --packages-up-to ur_automata_bringup
+colcon build --packages-select ur_automata_bringup
+source install/setup.bash
 ```
 
-> **IMPORTANTE:** colcon e i launch ROS vanno eseguiti **solo dentro il
-> container**, mai dall'host.
->
-> I launch file leggono `automata_config.yaml` dal *package share installato*,
-> non da `src/`. Dopo aver modificato il YAML, ricompila `ur_automata_bringup`
-> (o tutto il workspace) e ri-sorgi `install/setup.bash`.
-
-Per fermare/rimuovere il container:
+Test (c'è una gtest sul planner di sequenza, gli altri pacchetti non hanno test):
 
 ```bash
-./run.sh down
+colcon test --packages-select ur_automata_scan
+colcon test-result --verbose
 ```
 
----
+> **Attenzione — il file di configurazione va ricompilato.**
+> Tutti i launch file leggono `automata_config.yaml` dallo **share installato**,
+> non da `src/`. Dopo ogni modifica al YAML serve
+> `colcon build --packages-select ur_automata_bringup` e un nuovo
+> `source install/setup.bash`, altrimenti si continua a lanciare la vecchia
+> configurazione.
 
-## 5. Struttura dei pacchetti
+## 5. Il file di configurazione unico
 
-Tutti i pacchetti applicativi stanno in `src/automata_robot/`:
-
-| Pacchetto | Ruolo |
-|---|---|
-| `ur_automata_description` | URDF/xacro della cella + mesh (TCP custom `ee_automata`) + config RViz. `urdf/ur_automata.urdf.xacro` parametrizza `ur_type` (default `ur5e`). `launch/display.launch.py` = solo visualizzazione (RSP + joint_state_publisher_gui + RViz). |
-| `ur_automata_moveit_config` | Config MoveIt 2 (SRDF, kinematics, limiti giunti/cartesiani, `moveit_controllers.yaml`, `ros2_controllers.yaml`) generata col Setup Assistant. Target tipico di modifica. |
-| `ur_automata_bringup` | Launch di alto livello: orchestra driver/control + MoveIt + scena. Contiene `config/automata_config.yaml` (vedi §6) e i controller. |
-| `ur_automata_scene` | Pubblica gli oggetti della planning scene (piattaforma + pezzo da scansionare). Mesh in `meshes/` (`platform.stl`, `ceramic_model.obj`). |
-| `ur_automata_scan` | Nodo C++ `scan_executor_node`: genera waypoint su una sfera attorno al pezzo, risolve IK e pianifica/esegue la scansione. |
-
-`src/utils/` = submodule upstream (vedi §2).
-
----
-
-## 6. Configurazione centrale (`automata_config.yaml`)
-
-Quasi tutto si controlla da un solo file:
-`src/automata_robot/ur_automata_bringup/config/automata_config.yaml`.
-
-Parametri chiave:
+`src/automata_robot/ur_automata_bringup/config/automata_config.yaml` è il punto
+da cui passano *tutti* i parametri: bringup, MoveIt, scena e scansione lo
+leggono. Tre sezioni:
 
 ```yaml
 robot:
-  ip: 192.168.1.97     # IP del controller. Reale: IP del UR. URSim: 192.168.56.101
-  type: ur5            # ur3, ur3e, ur5, ur5e, ur10, ur10e, ur16e
+  ip: 192.168.56.101      # controller UR (URSim o reale)
+  type: ur5               # ur3, ur3e, ur5, ur5e, ur10, ur10e, ur16e
 
 planning:
   group: ur_manipulator
   global_frame: world
-  end_effector_link: ee_automata_tcp   # deve coincidere col SRDF
+  end_effector_link: ee_automata_tcp
+  trajectory_scaling_factor: 0.4
+  home_pose_name: home
+  lower_home_pose_name: lower_scan_ready
   use_moveit: true
-  use_scene:  true     # spawn della planning scene
-  use_rviz:   true
+  use_scene: true
+  use_rviz: true
 
 scan:
-  center: [0.133, 0.40, 0.504]   # centro del pezzo, in metri, nel global_frame
-  platform_sim: false            # true=disco+gambe simulati | false=mesh STL platform.stl
-  radius: 0.30                   # raggio della sfera di waypoint
-  hemisphere: full               # upper | lower | full
-  # ... molti altri parametri di scan, IK, occlusione, fallback e planner OMPL
+  center: [0.133, 0.40, 0.504]
+  radius: 0.30
+  ...
 ```
 
-Il file è **ampiamente commentato in italiano**: leggilo per i dettagli su
-emisferi, esclusione equatoriale, ricerca del pitch, occlusion check, fallback
-e scelta del planner (OMPL / Pilz).
+Note su `planning`:
 
-> Dopo ogni modifica: ricompila `ur_automata_bringup` e ri-sorgi l'overlay
-> (vedi §4).
+- `end_effector_link: ee_automata_tcp` è il link definito in fondo a
+  `ur_automata.urdf.xacro` (offset `xyz="0 0.052 0.153"` da `tool0`) e deve
+  coincidere con il tip link del gruppo nel SRDF.
+- `home_pose_name` e `lower_home_pose_name` sono `group_state` definiti in
+  `ur_automata_moveit_config/config/ur_automata.srdf` (`home`, `up`,
+  `lower_scan_ready`). Se ne cambi il nome qui, deve esistere lì.
+- `trajectory_scaling_factor` finisce in `setMaxVelocityScalingFactor` **e**
+  `setMaxAccelerationScalingFactor` dei nodi di scansione.
+- `use_moveit`, `use_rviz`, `use_scene` sono i default degli omonimi argomenti
+  di launch e si possono sovrascrivere da riga di comando.
 
 ---
 
-## 7. Avvio in simulazione
+## 6. Bring-up in simulazione (URSim)
 
-Due strade: **URSim** (controller UR virtuale, identico al reale) oppure
-**Gazebo** (simulazione fisica). URSim è quella allineata a `automata_config`.
+URSim è il simulatore ufficiale UR: gira in un suo container Docker ed espone
+un controller PolyScope completo. Non è Gazebo — non c'è fisica dell'ambiente,
+ma il comportamento del controller (programmi, External Control, safety) è
+quello vero. È il modo più fedele per provare tutto prima del robot reale.
 
-### Opzione A — URSim (consigliata, stessa pipeline del robot reale)
-
-URSim emula il controller PolyScope: il driver `ur_robot_driver` ci si collega
-esattamente come al robot vero.
-
-**1) Sull'host**, avvia URSim (gira in un suo container Docker su rete
-`192.168.56.0/24`, IP `192.168.56.101`):
+### 6.1 Avviare URSim (sull'host, **non** dentro il container)
 
 ```bash
 ./start_ursim_seccomp.sh
 ```
 
-Lo script scarica la URCap *External Control*, monta uno storage persistente e
-avvia URSim con `seccomp=unconfined` (workaround kernel ≥ 6.15). Interfacce:
-- VNC: `localhost:5900`
-- Web (noVNC): <http://localhost:6080>
+Lo script:
 
-Sul teach pendant virtuale carica/avvia il programma con **External Control** e
-premi **Play**.
+- scarica l'URCap *External Control* v1.0.5 (`.jar`) in `~/.ursim/e-series/urcaps`
+- crea la rete Docker `ursim_net` (`192.168.56.0/24`, gateway `192.168.56.1`)
+- avvia `universalrobots/ursim_e-series:5.25.1` con IP fisso **192.168.56.101**
+- monta programmi e impostazioni PolyScope sotto `~/.ursim/e-series` (persistenti)
+- usa `--security-opt seccomp=unconfined`: è il workaround per i kernel ≥ 6.15,
+  dove `URControl` fallisce con ENOSYS sulla `socket()`. Con lo script ufficiale
+  `start_ursim.sh` il simulatore non parte.
 
-**2) In `automata_config.yaml`** imposta `robot.ip: 192.168.56.101` (e
-`robot.type` coerente con `ROBOT_MODEL` dello script, di default UR5). Ricompila
-`ur_automata_bringup`.
+Interfaccia PolyScope: browser su **http://localhost:6080** (noVNC) oppure client
+VNC su `localhost:5900`.
 
-**3) Dentro il container**, avvia driver + MoveIt + scena + RViz:
+### 6.2 Preparare PolyScope
+
+1. Accendi il robot: *Power on* → *Start* → *OK* (il braccio deve risultare
+   `RUNNING`, non `IDLE`).
+2. *Installation* → *URCaps* → **External Control**:
+   - **Host IP**: `192.168.56.1` (il gateway della rete `ursim_net`, cioè
+     l'host su cui gira il driver ROS)
+   - **Custom port**: `50002`
+3. *Program* → aggiungi il nodo **External Control** al programma e salvalo.
+4. Premi **Play** *solo dopo* aver avviato il bringup ROS (punto 6.3): il
+   programma va in errore se non trova il driver in ascolto.
+
+### 6.3 Avviare il bringup
+
+Nel container, con `robot.ip: 192.168.56.101` in `automata_config.yaml`:
 
 ```bash
 ros2 launch ur_automata_bringup ur_automata_bringup.launch.py
 ```
 
-### Opzione B — Gazebo (GZ Sim)
+Cosa parte:
 
-Usa i launch upstream di `ur_simulation_gz` (l'hardware interface è il plugin
-Gazebo invece del driver reale):
+- `ur_automata_control.launch.py` → `ur_control.launch.py` del driver upstream
+  con la nostra URDF (`ur_automata.urdf.xacro`), i nostri controller
+  (`ur_automata_controllers.yaml`) e `scaled_joint_trajectory_controller` attivo
+- `ur_automata_moveit.launch.py` → `move_group` + RViz con il pannello
+  MotionPlanning (se `use_moveit`/`use_rviz` sono true)
+- `scene.launch.py` di `ur_automata_scene` → pubblica la planning scene
+  (tavolo, piattaforma, oggetto) via `/apply_planning_scene` (se `use_scene`)
 
-```bash
-# solo Gazebo + controller + RViz
-ros2 launch ur_simulation_gz ur_sim_control.launch.py ur_type:=ur5e
-
-# Gazebo + MoveIt
-ros2 launch ur_simulation_gz ur_sim_moveit.launch.py ur_type:=ur5e
-```
-
-> In Gazebo il controller di traiettoria si chiama `joint_trajectory_controller`
-> (sul reale `scaled_joint_trajectory_controller`) e va usato
-> `use_sim_time:=true` per il move_group. Dettagli e test di pipeline in `ur.md`.
-
-### Test rapido senza robot (mock hardware)
-
-```bash
-ros2 launch ur_robot_driver ur_control.launch.py \
-  ur_type:=ur5e robot_ip:=0.0.0.0 use_mock_hardware:=true
-```
-
----
-
-## 8. Avvio sul robot reale
-
-L'unica differenza rispetto a URSim è l'IP del controller e una calibrazione una
-tantum. Tutto il resto (launch, controller, MoveIt, nodi) è identico.
-
-### 8.1 Calibrazione (una tantum per robot)
-
-Esegui `ur_calibration` contro il controller fisico e salva lo YAML risultante:
-
-```bash
-ros2 launch ur_calibration calibration_correction.launch.py \
-  robot_ip:=<IP_DEL_ROBOT> \
-  target_filename:="${HOME}/my_robot_calibration.yaml"
-```
-
-Questo YAML va passato al driver tramite `kinematics_params_file` (default in
-`ur_automata_control.launch.py` = cinematica nominale, OK solo per URSim).
-
-### 8.2 Configurazione
-
-In `automata_config.yaml` imposta:
-- `robot.ip` = IP reale del controller UR
-- `robot.type` = modello reale (es. `ur5e`)
-
-Ricompila `ur_automata_bringup` e ri-sorgi l'overlay.
-
-### 8.3 Bring-up
+Override da riga di comando degli argomenti dichiarati al livello alto:
 
 ```bash
 ros2 launch ur_automata_bringup ur_automata_bringup.launch.py \
-  kinematics_params_file:=${HOME}/my_robot_calibration.yaml
+  use_moveit:=true use_rviz:=false use_scene:=true
 ```
 
-> Per passare la calibrazione di default (senza scrivere il flag ogni volta)
-> aggiorna il `default_value` di `kinematics_params_file` in
-> `ur_automata_control.launch.py`.
+Ora premi **Play** su PolyScope. Nel log del driver deve comparire
+`Robot connected to reverse interface. Ready to receive control commands.`
 
-### 8.4 External Control sul teach pendant
+### 6.4 Verifica rapida
 
-Sul pendant deve girare il programma con la URCap **External Control** che punta
-all'IP del PC ROS.
+```bash
+ros2 topic echo /joint_states --once
+ros2 control list_controllers
+ros2 action list | grep follow_joint_trajectory
+```
 
-> **IMPORTANTE:** ogni volta che riavvii il bring-up sul robot reale devi
-> ri-premere **Play** sul teach pendant, altrimenti il driver resta in attesa
-> della connessione e i comandi non vengono eseguiti.
+In RViz: trascina il marker interattivo, *Plan*, poi *Execute* — il braccio si
+muove anche in PolyScope.
 
 ---
 
-## 9. Eseguire una scansione
+## 7. Bring-up sul robot reale
 
-Con il bring-up attivo (sim o reale), in un **secondo terminale dentro il
-container** (ricorda `source install/setup.bash`):
+### 7.1 Rete
 
-```bash
-# (opzionale) spawn della sola scena, se non avviata dal bringup
-ros2 launch ur_automata_scene scene.launch.py
-
-# genera i waypoint sulla sfera, risolve IK ed esegue la scansione
-ros2 launch ur_automata_scan scan.launch.py
-```
-
-Lo scan **parte sempre in pausa**: il nodo stampa la tabella dei waypoint e
-aspetta il via libera. Lanciato via `ros2 launch` la tastiera è disabilitata
-(stdin non è un TTY), quindi lo start arriva dal service, da un terzo terminale
-nel container:
+Collega il PC al controller UR via Ethernet e mettili nella stessa sottorete.
+Sul teach pendant: *Settings* → *System* → *Network*, IP statico (nella cella si
+usa `192.168.1.97`). Dall'host:
 
 ```bash
-ros2 service call /scan_executor_node/start std_srvs/srv/Trigger {}
-ros2 service call /scan_executor_node/pause std_srvs/srv/Trigger {}
+ping 192.168.1.97
 ```
 
-Il nodo `scan_executor_node` carica i parametri dalla sezione `scan` di
-`automata_config.yaml` e la `kinematics.yaml` di `ur_automata_moveit_config`
-(necessaria perché l'IK lato client funzioni — senza, `setFromIK` fallisce in
-silenzio). Regola emisfero, raggio, numero di anelli/punti, occlusion check,
-fallback e planner direttamente nel YAML.
+### 7.2 Calibrazione cinematica (una volta per robot)
+
+Ogni UR esce di fabbrica con i suoi parametri DH misurati: senza di essi
+l'errore in punta può arrivare a qualche millimetro. Va fatto **una volta** per
+ogni robot fisico, con il robot acceso e raggiungibile:
+
+```bash
+ros2 launch ur_calibration calibration_correction.launch.py \
+  robot_ip:=192.168.1.97 \
+  target_filename:="/home/ros/ur/src/automata_robot/ur_automata_bringup/config/ur5e_calibration.yaml"
+```
+
+Il YAML prodotto va poi passato al bringup (vedi sotto). Senza, si usano i
+valori nominali di `ur_description` — accettabili per URSim, **non** per il
+robot reale.
+
+### 7.3 Configurazione
+
+In `automata_config.yaml`:
+
+```yaml
+robot:
+  ip: 192.168.1.97
+  type: ur5e            # il modello vero della cella
+```
+
+e ricompila `ur_automata_bringup` (vedi §4).
+
+Per il file di calibrazione, che non ha una voce nel YAML, lancia i due livelli
+separatamente — è l'unico modo pulito per passare argomenti al livello control,
+perché il launch di alto livello non li ridichiara:
+
+```bash
+# terminale 1 — driver + controller
+ros2 launch ur_automata_bringup ur_automata_control.launch.py \
+  ur_type:=ur5e \
+  robot_ip:=192.168.1.97 \
+  kinematics_params_file:=/home/ros/ur/src/automata_robot/ur_automata_bringup/config/ur5e_calibration.yaml
+
+# terminale 2 — MoveIt + RViz (+ scena)
+ros2 launch ur_automata_bringup ur_automata_moveit.launch.py \
+  ur_type:=ur5e use_rviz:=true use_scene:=true
+```
+
+`ur_type` **deve essere identico nei due comandi**: altrimenti il modello
+cinematico di `move_group` non corrisponde al TF pubblicato dal driver e le
+traiettorie escono sbagliate senza errori evidenti.
+
+Argomenti utili di `ur_automata_control.launch.py`:
+
+| argomento | default | note |
+|---|---|---|
+| `ur_type` | da YAML | modello UR |
+| `robot_ip` | da YAML | IP del controller |
+| `kinematics_params_file` | nominale di `ur_description` | YAML di `ur_calibration` |
+| `headless_mode` | `false` | `true` = il driver invia lo URScript direttamente, senza il programma External Control sul pendant |
+| `tf_prefix` | `""` | prefisso su joint e link |
+| `initial_joint_controller` | `scaled_joint_trajectory_controller` | MoveIt si aspetta questo |
+
+### 7.4 Sequenza di accensione
+
+1. Accendi il controller, sblocca i freni (*Power on* → *Start*).
+2. Carica il programma con il nodo **External Control** (Host IP = IP del PC su
+   cui gira ROS, porta `50002`).
+3. Avvia il bringup ROS.
+4. Premi **Play** sul pendant.
+
+> **Ogni volta che riavvii il bringup devi ripremere Play**: allo stop del
+> driver il programma URScript sul controller termina e va rilanciato a mano.
+
+### 7.5 Prima messa in moto
+
+- Abbassa `trajectory_scaling_factor` a `0.05`–`0.1` per i primi movimenti.
+- Riduci lo *speed slider* di PolyScope al 20–30%: lo
+  `scaled_joint_trajectory_controller` lo rispetta e rallenta la traiettoria
+  senza deformarla.
+- Tieni il pulsante di emergenza a portata di mano; verifica che la scena
+  MoveIt (tavolo, piattaforma, oggetto) corrisponda davvero all'ingombro reale
+  prima di eseguire una scansione completa.
 
 ---
 
-## 10. Chiusura e cleanup della sessione
+## 8. Simulazione vs robot reale — cosa cambiare
 
-**Chiudere il terminale non chiude i processi.** Se esci da un `docker exec` (o
-chiudi la finestra) senza fermare il launch, la bash muore ma i suoi figli
-sopravvivono e vengono riadottati da PID 1 dentro il container: restano vivi,
-in ascolto sul DDS, e continuano a rispondere.
+| | URSim | Robot reale |
+|---|---|---|
+| `robot.ip` | `192.168.56.101` | IP del controller (es. `192.168.1.97`) |
+| `robot.type` | `ur5` (URSim parte con `ROBOT_MODEL=UR5`) | modello reale, es. `ur5e` |
+| `kinematics_params_file` | default nominale, va bene | **obbligatorio** il YAML di `ur_calibration` |
+| `trajectory_scaling_factor` | `0.4` tranquillamente | partire da `0.05`–`0.1` |
+| `planning.use_rviz` | `true` | `true` per verificare, `false` a regime |
+| `scan.platform_sim` | `true` se la piattaforma reale non c'è | `false`: mesh STL della piattaforma vera |
+| External Control | Play su PolyScope in noVNC | Play sul teach pendant, dopo ogni bringup |
+| avvio | `./start_ursim_seccomp.sh` + bringup | solo bringup |
 
-Il sintomo tipico è un secondo `move_group` rimasto in piedi da una sessione
-precedente. Due action server sulla stessa action rispondono entrambi allo
-stesso goal, e il client scarta la risposta duplicata:
-
-```
-[ERROR] [...rclcpp_action]: unknown goal response, ignoring...
-[ERROR] [...rclcpp_action]: unknown result response, ignoring...
-```
-
-con `execute()` che resta appeso e i waypoint fermi su RUNNING.
-
-### Procedura
-
-**1. Ctrl-C nel terminale del launch, e aspetta la sequenza di shutdown.**
-`ros2 launch` propaga il SIGINT ai figli, ma serve dargli il tempo di farlo.
-
-**2. Verifica prima di rilanciare** (dentro il container):
-
-```bash
-pgrep -af 'ros2 launch|move_group|ros2_control_node|rviz2'
-```
-
-Output vuoto = pulito. Qualsiasi riga che compare è un processo ancora vivo.
-
-**3. Se resta qualcosa:**
-
-```bash
-pkill -f ur_automata_bringup; pkill -f move_group
-pkill -f rviz2; pkill -f ros2_control_node
-```
-
-**4. Opzione nucleare**, dall'host: butta giù il container, muore tutto quello
-che contiene (URSim gira in un container separato e sopravvive):
-
-```bash
-./run.sh down
-```
-
-### Diagnostica rapida
-
-```bash
-ros2 action info /execute_trajectory   # deve elencare UN solo action server
-ros2 node list                         # nessun nome duplicato
-ps -eo pid,ppid,etime,cmd | grep ros2  # PPID 1 = processo orfano di una vecchia sessione
-```
+Il resto — controller, MoveIt, scena, nodi di scansione — non cambia.
 
 ---
 
-## 11. Riferimenti
+## 9. Eseguire la scansione
 
-- **`ur.md`** — tutorial lungo (IT): architettura, bring-up, scrittura di un
-  nodo C++, da zero al robot reale.
-- Documentazione ufficiale UR ROS 2:
-  <https://docs.universal-robots.com/Universal_Robots_ROS2_Documentation>
-- UR ROS 2 Driver: <https://github.com/UniversalRobots/Universal_Robots_ROS2_Driver>
-- UR ROS 2 Description: <https://github.com/UniversalRobots/Universal_Robots_ROS2_Description>
-- UR Simulation (Gazebo): <https://github.com/UniversalRobots/Universal_Robots_ROS2_GZ_Simulation>
-- External Control URCap: <https://github.com/UniversalRobots/Universal_Robots_ExternalControl_URCap>
-- MoveIt 2: <https://moveit.ai>
+Con il bringup già attivo, in una seconda shell del container:
+
+```bash
+ros2 launch ur_automata_scan scan_sequence.launch.py
+```
+
+Il nodo:
+
+1. genera i waypoint sulla sfera (`scan.center`, `scan.radius`, emisfero,
+   direzione, esclusioni all'equatore);
+2. **enumera offline** le soluzioni IK di ogni waypoint (TRAC-IK in modalità
+   `Speed`, più pitch e più seed per ramo), scartando quelle in collisione con
+   la scena o con il braccio che occlude la vista camera→centro;
+3. sceglie la sequenza con una **DP a strati**, minimizzando lo spostamento nei
+   giunti tra waypoint consecutivi;
+4. esegue, waypoint per waypoint, con planner primario + planner di riserva e
+   fallback su un punto vicino se il waypoint è irraggiungibile;
+5. torna a `home` e stampa il riepilogo (raggiunti / falliti, cause, tempo).
+
+**Lo scan parte sempre in pausa.** Per farlo partire:
+
+```bash
+ros2 service call /scan_sequence_node/start std_srvs/srv/Trigger {}
+ros2 service call /scan_sequence_node/pause std_srvs/srv/Trigger {}
+```
+
+Se il nodo gira su un terminale interattivo (non via `ros2 launch`) funzionano
+anche i tasti: **SPAZIO** = pausa/riprendi, **Q** = esci.
+
+`scan_executor_node` (`scan.launch.py`) è la versione precedente, senza
+enumerazione offline né DP: pianifica ed esegue waypoint per waypoint. È tenuta
+come riferimento/backup e i suoi service sono `/scan_executor_node/start` e
+`/scan_executor_node/pause`.
+
+> I marker dei waypoint (sfere + frecce dell'orientamento, colorate per stato)
+> sono pubblicati su `/scan_waypoints_markers`. La config `automata.rviz` del
+> bringup ha già il display **Scan waypoints** su quel topic: non serve
+> aggiungerlo a mano. Se lanci RViz con un'altra config, il display va creato.
+
+### 9.1 Parametri di scansione (`scan:`)
+
+**Geometria**
+
+| parametro | effetto |
+|---|---|
+| `center` | centro della sfera nel frame `planning.global_frame`, in metri |
+| `radius` | raggio della sfera. È il vincolo più duro: allargarlo porta subito i waypoint fuori portata |
+| `hemisphere` | `upper` \| `lower` \| `full` (prima il superiore, poi l'inferiore) |
+| `direction` | `latitudinal` (anello per anello) \| `longitudinal` (meridiano per meridiano) |
+| `num_rings`, `points_per_ring` | densità in modalità latitudinal |
+| `num_arc`, `points_per_arc` | densità in modalità longitudinal |
+| `equator_exclusion_upper_deg`, `equator_exclusion_lower_deg` | banda vietata attorno all'equatore: il robot non può puntare in linea con il supporto. I due emisferi possono avere valori diversi |
+| `stagger_rings` | anelli pari sfasati di mezzo passo → copertura più uniforme |
+| `adaptive_rings` | i punti per anello scalano con `sin(theta)`: meno al polo, più all'equatore |
+
+**Orientamento del TCP**
+
+| parametro | effetto |
+|---|---|
+| `lock_pitch` | `true`: X del TCP orizzontale, nessuna rotazione attorno a Y. `false`: pitch libero, si cerca l'offset con IK valida |
+| `pitch_search_range_deg`, `pitch_search_step_deg` | intervallo e passo della ricerca del pitch |
+| `pitch_xparallel_bias` | `0.0` = qualsiasi pitch va bene; `0.05` = preferenza moderata per X parallelo; `>0.3` = X parallelo quasi sempre |
+| `occlusion_check`, `occlusion_threshold_deg` | scarta le IK in cui un link del braccio entra nel cono di vista camera→centro (tipico 15–25°) |
+
+**IK e planning**
+
+| parametro | effetto |
+|---|---|
+| `ik_timeout` | timeout di una singola `setFromIK` in esecuzione. Con TRAC-IK bastano 5–50 ms |
+| `enum_ik_timeout` | timeout della IK in fase di enumerazione (`scan_sequence_node`). Costo massimo della fase = waypoint × pitch × seed × timeout |
+| `planner` | `pilz_ptp` (deterministico, ~10 ms, retta in joint space), `pilz_lin` (lineare cartesiano, rischio singolarità), `ompl` |
+| `fallback_planner` | planner di riserva quando il primario fallisce; `none` per disattivarlo. Combinazione tipica: `pilz_ptp` + `ompl` |
+| `ompl_algorithm` | usato solo con `planner: ompl` (`RRTConnect`, `RRTstar`, `PRM`, …) |
+| `planning_time`, `planning_attempts` | tempo e tentativi indipendenti per waypoint. In scena affollata alzare a 10–15 s aiuta i punti difficili |
+| `fallback_search`, `fallback_radius_mm`, `fallback_planning_time`, `fallback_max_plan_attempts` | ricerca di un punto alternativo vicino a un waypoint fallito |
+
+> `pilz_*` **ignora** il path constraint usato quando `lock_pitch: false`.
+
+**Scena**
+
+`platform_sim: true` costruisce la piattaforma come disco + 3 gambe cilindriche;
+`false` carica la mesh reale `ur_automata_scene/meshes/disk.stl` (esportata in
+mm, quindi scalata ×0.001), posizionata in modo che la faccia superiore del
+disco coincida con `scan.center`: spostare la piattaforma vuol dire cambiare
+solo `scan.center`. Con `false` nella scena **non c'è nessun sostegno** sotto il
+disco: se quello reale ne ha uno, va aggiunto prima di scansionare l'emisfero
+inferiore sul robot vero. L'oggetto da scansionare è `meshes/ceramic_model.obj`,
+piazzato in `scan.center`.
+
+Il punto della sfera più lontano dalla base dista `|scan.center| + radius`:
+con questo end effector il limite pratico dell'UR5e è ~0.92 m, quindi con
+`radius: 0.30` il centro deve stare entro ~0.60 m dalla base.
+
+---
+
+## 10. Struttura del repo
+
+```
+docker/                  Dockerfile, entrypoint, requirements Python
+docker-compose.yaml      servizio ros_dev: GPU, X11, rete host, mount del workspace
+run.sh                   wrapper build/rebuild/run/down
+start_ursim_seccomp.sh   avvio URSim con workaround seccomp
+
+src/automata_robot/
+  ur_automata_bringup/         config unica + launch di alto livello (control, moveit, bringup) + RViz
+  ur_automata_description/     URDF/xacro della cella, mesh dell'end effector, launch di sola visualizzazione
+  ur_automata_moveit_config/   SRDF, kinematics (TRAC-IK), limiti, pipeline OMPL e Pilz, controller MoveIt, launch generati
+  ur_automata_scene/           planning scene: tavolo, piattaforma, oggetto; mesh STL/OBJ
+  ur_automata_scan/            generazione waypoint sferici, planner di sequenza (DP), nodi esecutori
+
+src/utils/                     submoduli UR upstream (driver e description), branch jazzy — read-only
+```
+
+Visualizzare solo il modello, senza driver né MoveIt:
+
+```bash
+ros2 launch ur_automata_description display.launch.py ur_type:=ur5e
+```
+
+Provare MoveIt senza robot e senza URSim (hardware fittizio):
+
+```bash
+ros2 launch ur_automata_moveit_config demo.launch.py
+```
+
+L'end effector è la mesh `ee_automata_V2.stl` agganciata a `tool0`; il TCP
+`ee_automata_tcp` è a `xyz = (0, 0.052, 0.153)` da `tool0`. Cambiare versione di
+end effector significa aggiornare mesh **e** offset del TCP in
+`ur_automata.urdf.xacro`.
+
+---
+
+## 11. Problemi frequenti
+
+| Sintomo | Causa / rimedio |
+|---|---|
+| Modifico `automata_config.yaml` e non cambia niente | i launch leggono lo share installato: `colcon build --packages-select ur_automata_bringup` + `source install/setup.bash` |
+| Il driver parte ma il robot non si muove | manca il **Play** su External Control: va ripremuto dopo ogni riavvio del bringup. In alternativa `headless_mode:=true` |
+| `Can't accept new action goals. Controller is not running` | il programma sul controller non è in esecuzione (stesso problema di sopra) |
+| URSim non parte, `URControl` va in errore | kernel ≥ 6.15: usa `./start_ursim_seccomp.sh`, non lo script ufficiale |
+| PolyScope non vede l'URCap | il `.jar` deve stare in `~/.ursim/e-series/urcaps`; i vecchi `.urcap` non sono più riconosciuti da PolyScope 5.25 |
+| External Control non si connette da URSim | Host IP deve essere `192.168.56.1` (gateway di `ursim_net`), non `127.0.0.1` |
+| `No kinematics solver instantiated for group ur_manipulator` | il nodo applicativo non ha caricato `kinematics.yaml`: i launch di `ur_automata_scan` lo passano sotto `robot_description_kinematics`, un nodo scritto a mano deve fare lo stesso |
+| Traiettorie plausibili ma posizioni sbagliate | `ur_type` diverso tra control e moveit, oppure manca il file di calibrazione sul robot reale |
+| Non vedo i marker dei waypoint in RViz | RViz deve girare con `automata.rviz` (lo fa il bringup) e il display **Scan waypoints** deve essere abilitato; il topic è `/scan_waypoints_markers` |
+| Molti waypoint falliscono in IK | `radius` troppo grande o `center` troppo lontano dalla base: la sfera esce dalla portata del braccio |
+| Molti fallimenti in plan | alza `planning_time` e `planning_attempts`, oppure imposta `fallback_planner: ompl` |
+| Plan fallito in pochi ms con `INVALID_MOTION_PLAN`, in move_group `ValidateSolution: Computed path is not valid` | il planner ha trovato un percorso ma lo ha controllato a passo troppo largo e sfiora un ostacolo sottile: abbassa `longest_valid_segment_fraction` in `config/ompl_planning.yaml` (oggi 0.001 ≈ 1.5°) |
+| move_group avvisa `Cannot find planning configuration ... kConfigDefault` | manca la voce in `planner_configs` di `ompl_planning.yaml`: OMPL ignora `scan.ompl_algorithm` e usa RRTConnect |
+| RViz non si apre dal container | `xhost +local:docker` (lo fa già `./run.sh run`) e `DISPLAY` valorizzato sull'host |
