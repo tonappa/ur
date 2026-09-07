@@ -15,8 +15,12 @@ planning:
   use_rviz: true                       # launch RViz alongside MoveIt
 
 scan:
-  #center: [0.133, 0.40, 0.504]   # centro del supporto, in metri, nel frame `planning.global_frame` y era 40
-  center: [0.133, 0.40, 0.504]   # centro del supporto, in metri, nel frame `planning.global_frame` y era 40
+  #center: [0.133, 0.40, 0.504]  # posizione originale (dp4): punto estremo a 0.955 m, fuori portata
+  #center: [0.133, 0.35, 0.504]  # dp5: 0.927 m, ancora fuori di 9 mm
+  center: [0.133, 0.35, 0.470]   # centro del supporto (faccia superiore del disco), in metri, nel
+                                 # frame `planning.global_frame`. Il punto piu' lontano della sfera
+                                 # dista |center| + radius dalla base: tenerlo sotto ~0.91 m.
+                                 # La mesh della piattaforma nella scena segue questo valore.
   platform_sim: false   # true: scena con disco+3 gambe simulati | false: usa il mesh STL meshes/platform.stl
   radius: 0.30               # raggio della sfera di waypoint, in metri
   hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)

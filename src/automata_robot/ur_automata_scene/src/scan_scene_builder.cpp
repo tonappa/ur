@@ -238,8 +238,8 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
     leg3 = make_obj("leg3", leg3_shape, leg3_mid,
                     rotation_z_to(leg3_start, leg3_end), global_frame, stamp);
   } else {
-    // Mesh STL della piattaforma reale. Posizionato a (0,0,0) con orientamento
-    // identità — se la mesh non combacia, modifica platform_pose qui sotto.
+    // Mesh STL della piattaforma reale, posizionata in modo che la faccia
+    // superiore del disco coincida con `center` (vedi platform_pose sotto).
     std::string platform_mesh_path =
         "file://" + package_path + "/meshes/disk.stl";
 
@@ -253,14 +253,16 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
         load_mesh_msg(platform_mesh_path, 0.001);
     platform.meshes.push_back(platform_mesh);
 
-    // Posizione: 60 cm in avanti rispetto alla base del robot (asse Y, in
-    // METRI). Rotazione composta: +90° attorno X, poi -90° attorno Z (entrambi
-    // nel frame world). NB: la mesh è già scalata in metri (load_mesh_msg
-    // scale=0.001).
+    // Rotazione composta: +90° attorno X, poi -90° attorno Z (entrambi nel
+    // frame world). Con questa rotazione, e l'STL scalato in metri, il disco
+    // (Ø 300 mm, spessore 4 mm) risulta centrato in (x, y - 0.20) e con la
+    // faccia superiore a z + 0.504 rispetto all'origine della mesh. La posa e'
+    // quindi ricavata da `center` cosi' che il piano di appoggio coincida con
+    // il centro di scansione: spostare la piattaforma = cambiare scan.center.
     geometry_msgs::msg::Pose platform_pose;
-    platform_pose.position.x = 0.133;
-    platform_pose.position.y = 0.60;
-    platform_pose.position.z = 0.0;
+    platform_pose.position.x = center.x();
+    platform_pose.position.y = center.y() + 0.20;
+    platform_pose.position.z = center.z() - 0.504;
     Eigen::Quaterniond q_rot =
         Eigen::AngleAxisd(-M_PI / 2.0, Eigen::Vector3d::UnitZ()) *
         Eigen::AngleAxisd(M_PI / 2.0, Eigen::Vector3d::UnitX());

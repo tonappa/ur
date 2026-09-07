@@ -1,0 +1,92 @@
+planning_plugins:
+  - ompl_interface/OMPLPlanner
+
+request_adapters:
+  - default_planning_request_adapters/ResolveConstraintFrames
+  - default_planning_request_adapters/ValidateWorkspaceBounds
+  - default_planning_request_adapters/CheckStartStateBounds
+  - default_planning_request_adapters/CheckStartStateCollision
+
+response_adapters:
+  - default_planning_response_adapters/AddTimeOptimalParameterization
+  - default_planning_response_adapters/ValidateSolution
+  - default_planning_response_adapters/DisplayMotionPath
+
+# Nomi usati dai nodi di scansione: <algoritmo>kConfigDefault
+# (scan.ompl_algorithm in automata_config.yaml). Senza questa lista OMPL
+# ignora il nome richiesto e usa sempre RRTConnect.
+planner_configs:
+  RRTConnectkConfigDefault:
+    type: geometric::RRTConnect
+  RRTkConfigDefault:
+    type: geometric::RRT
+  RRTstarkConfigDefault:
+    type: geometric::RRTstar
+  TRRTkConfigDefault:
+    type: geometric::TRRT
+  BiTRRTkConfigDefault:
+    type: geometric::BiTRRT
+  LBTRRTkConfigDefault:
+    type: geometric::LBTRRT
+  PRMkConfigDefault:
+    type: geometric::PRM
+  PRMstarkConfigDefault:
+    type: geometric::PRMstar
+  LazyPRMkConfigDefault:
+    type: geometric::LazyPRM
+  LazyPRMstarkConfigDefault:
+    type: geometric::LazyPRMstar
+  KPIECEkConfigDefault:
+    type: geometric::KPIECE
+  BKPIECEkConfigDefault:
+    type: geometric::BKPIECE
+  LBKPIECEkConfigDefault:
+    type: geometric::LBKPIECE
+  ESTkConfigDefault:
+    type: geometric::EST
+  BiESTkConfigDefault:
+    type: geometric::BiEST
+  ProjESTkConfigDefault:
+    type: geometric::ProjEST
+  SBLkConfigDefault:
+    type: geometric::SBL
+  FMTkConfigDefault:
+    type: geometric::FMT
+  BFMTkConfigDefault:
+    type: geometric::BFMT
+  PDSTkConfigDefault:
+    type: geometric::PDST
+  STRIDEkConfigDefault:
+    type: geometric::STRIDE
+
+ur_manipulator:
+  default_planner_config: RRTConnectkConfigDefault
+  planner_configs:
+    - RRTConnectkConfigDefault
+    - RRTkConfigDefault
+    - RRTstarkConfigDefault
+    - TRRTkConfigDefault
+    - BiTRRTkConfigDefault
+    - LBTRRTkConfigDefault
+    - PRMkConfigDefault
+    - PRMstarkConfigDefault
+    - LazyPRMkConfigDefault
+    - LazyPRMstarkConfigDefault
+    - KPIECEkConfigDefault
+    - BKPIECEkConfigDefault
+    - LBKPIECEkConfigDefault
+    - ESTkConfigDefault
+    - BiESTkConfigDefault
+    - ProjESTkConfigDefault
+    - SBLkConfigDefault
+    - FMTkConfigDefault
+    - BFMTkConfigDefault
+    - PDSTkConfigDefault
+    - STRIDEkConfigDefault
+  # Passo dei controlli di collisione lungo un tratto, come frazione
+  # dell'estensione dello spazio dei giunti (~26 rad per l'UR5e).
+  # Default OMPL 0.01 = ~0.26 rad = ~15 gradi fra un controllo e l'altro:
+  # l'end effector percorre ~20 cm e una piastra da 4 mm passa inosservata
+  # (poi ValidateSolution la trova e scarta il piano: INVALID_MOTION_PLAN).
+  # 0.001 = ~1.5 gradi, allineato al check dei tratti in scan_sequence_node.
+  longest_valid_segment_fraction: 0.001

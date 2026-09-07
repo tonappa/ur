@@ -39,6 +39,7 @@
 #include <moveit/planning_scene/planning_scene.h>
 #include <moveit_msgs/srv/get_planning_scene.hpp>
 #include <moveit_msgs/msg/planning_scene_components.hpp>
+#include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <moveit_msgs/msg/constraints.hpp>
 #include <moveit_msgs/msg/orientation_constraint.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -646,6 +647,27 @@ static bool resolve_planner(const std::string & name, const std::string & ompl_a
   return true;
 }
 
+// Nome leggibile del codice d'errore di plan(). I codici sono quelli di
+// moveit_msgs/MoveItErrorCodes; quelli non elencati escono come numero.
+static std::string plan_error_name(int code)
+{
+  using Codes = moveit_msgs::msg::MoveItErrorCodes;
+  switch (code) {
+    case Codes::FAILURE:                              return "FAILURE (generico: vedi il terminale del bringup)";
+    case Codes::PLANNING_FAILED:                      return "PLANNING_FAILED";
+    case Codes::INVALID_MOTION_PLAN:                  return "INVALID_MOTION_PLAN (percorso trovato ma scartato da ValidateSolution)";
+    case Codes::TIMED_OUT:                            return "TIMED_OUT";
+    case Codes::START_STATE_IN_COLLISION:             return "START_STATE_IN_COLLISION";
+    case Codes::START_STATE_VIOLATES_PATH_CONSTRAINTS: return "START_STATE_VIOLATES_PATH_CONSTRAINTS";
+    case Codes::GOAL_IN_COLLISION:                    return "GOAL_IN_COLLISION";
+    case Codes::GOAL_VIOLATES_PATH_CONSTRAINTS:       return "GOAL_VIOLATES_PATH_CONSTRAINTS";
+    case Codes::GOAL_CONSTRAINTS_VIOLATED:            return "GOAL_CONSTRAINTS_VIOLATED";
+    case Codes::INVALID_GOAL_CONSTRAINTS:             return "INVALID_GOAL_CONSTRAINTS";
+    case Codes::INVALID_ROBOT_STATE:                  return "INVALID_ROBOT_STATE";
+    default:                                          return "codice " + std::to_string(code);
+  }
+}
+
 // plan() con il planner primario; se fallisce e c'e' un fallback, riprova con
 // quello. Il target (joint / pose / named) va impostato PRIMA dal chiamante.
 // Al ritorno il planner primario e' di nuovo quello attivo.
@@ -657,14 +679,25 @@ static bool plan_with_fallback(
 {
   move_group.setPlanningPipelineId(planners.primary.pipeline);
   move_group.setPlannerId(planners.primary.planner);
-  if (move_group.plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) return true;
-  if (!planners.has_fallback) return false;
+  moveit::core::MoveItErrorCode code = move_group.plan(plan);
+  if (code == moveit::core::MoveItErrorCode::SUCCESS) return true;
+  if (!planners.has_fallback) {
+    RCLCPP_WARN(logger, "plan con %s fallito: %s",
+                planners.primary.label().c_str(), plan_error_name(code.val).c_str());
+    return false;
+  }
 
-  RCLCPP_WARN(logger, "plan con %s fallito, ritento con %s",
-              planners.primary.label().c_str(), planners.fallback.label().c_str());
+  RCLCPP_WARN(logger, "plan con %s fallito (%s), ritento con %s",
+              planners.primary.label().c_str(), plan_error_name(code.val).c_str(),
+              planners.fallback.label().c_str());
   move_group.setPlanningPipelineId(planners.fallback.pipeline);
   move_group.setPlannerId(planners.fallback.planner);
-  bool ok = (move_group.plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+  code = move_group.plan(plan);
+  bool ok = (code == moveit::core::MoveItErrorCode::SUCCESS);
+  if (!ok) {
+    RCLCPP_WARN(logger, "plan con %s fallito: %s",
+                planners.fallback.label().c_str(), plan_error_name(code.val).c_str());
+  }
 
   move_group.setPlanningPipelineId(planners.primary.pipeline);
   move_group.setPlannerId(planners.primary.planner);
@@ -696,6 +729,22 @@ static bool go_home(moveit::planning_interface::MoveGroupInterface & move_group,
 
   RCLCPP_INFO(logger, "Recovery done: now at '%s'.", home_pose_name.c_str());
   return true;
+}
+
+// Recovery a due livelli: prima la posa dell'emisfero corrente, poi `home`.
+// Da certe configurazioni basse una delle due non si pianifica (es. la retta
+// PTP passa per un'autocollisione e OMPL sfiora il disco), l'altra spesso si'.
+static bool recover_to_safe_pose(moveit::planning_interface::MoveGroupInterface & move_group,
+                                 const PlannerSetup & planners,
+                                 const std::string & recovery_pose_name,
+                                 const std::string & home_pose_name,
+                                 const rclcpp::Logger & logger)
+{
+  if (go_home(move_group, planners, recovery_pose_name, logger)) return true;
+  if (recovery_pose_name == home_pose_name) return false;
+  RCLCPP_WARN(logger, "Recovery verso '%s' fallita, provo '%s'.",
+              recovery_pose_name.c_str(), home_pose_name.c_str());
+  return go_home(move_group, planners, home_pose_name, logger);
 }
 
 // Block until SPACE is pressed (or quit). Redraws the table on every toggle.
@@ -1228,6 +1277,7 @@ int main(int argc, char ** argv)
     seq = choose_sequence(start_joints, dp_layers, edge_ok);
     ++dp_iterations;
 
+    const size_t cache_before = edge_cache.size();
     int new_blocked = 0;
     int prev_layer = -1;
     int prev_c = 0;
@@ -1254,6 +1304,14 @@ int main(int argc, char ** argv)
                 iter + 1, new_blocked, edge_cache.size());
     std::fflush(stdout);
     if (new_blocked == 0) break;
+    // Nessun tratto nuovo controllato: tutte le alternative dei layer bloccati
+    // sono gia' in cache e sono tutte in collisione. Un'altra iterazione
+    // darebbe la stessa catena; il tratto rimasto lo gestisce il planner.
+    if (edge_cache.size() == cache_before) {
+      std::printf("  DP: %d tratti bloccati senza alternative libere, li lascio al planner.\n",
+                  new_blocked);
+      break;
+    }
   }
   size_t blocked_edges_total = 0;
   for (const auto & kv : edge_cache) {
@@ -1350,7 +1408,7 @@ int main(int argc, char ** argv)
       // una volta verso la STESSA configurazione.
       rows[i].status = WpStatus::HOMING;
       render_table(rows, lock_pitch, planner_label);
-      if (!go_home(move_group, planners, recovery_pose_name, logger)) {
+      if (!recover_to_safe_pose(move_group, planners, recovery_pose_name, home_pose_name, logger)) {
         // Neanche la recovery pianifica: quasi sempre stato di partenza
         // invalido (robot in collisione / fuori limiti). Continuare farebbe
         // solo fallire tutti i waypoint restanti: ci si ferma qui.
@@ -1391,7 +1449,7 @@ int main(int argc, char ** argv)
       set_marker_color(markers_array, i, COLOR_RED);
       publish_markers(markers_pub, markers_array);
       render_table(rows, lock_pitch, planner_label);
-      bool recovered = go_home(move_group, planners, recovery_pose_name, logger);
+      bool recovered = recover_to_safe_pose(move_group, planners, recovery_pose_name, home_pose_name, logger);
       rows[i].status = WpStatus::FAIL;
       render_table(rows, lock_pitch, planner_label);
       if (!recovered) {
