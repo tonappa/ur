@@ -131,9 +131,10 @@ make_color(const std::string &id, float r, float g, float b, float a = 1.0f) {
 
 moveit_msgs::msg::PlanningScene
 build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
-                 const rclcpp::Time &stamp, bool platform_sim) {
+                 const rclcpp::Time &stamp, const SceneOptions &opt) {
   moveit_msgs::msg::PlanningScene scene;
   scene.is_diff = true;
+  const bool platform_sim = opt.platform_sim;
 
   // ---------------- Table ----------------
   shape_msgs::msg::SolidPrimitive table_shape;
@@ -146,29 +147,30 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   moveit_msgs::msg::CollisionObject table = make_obj(
       "table", table_shape, table_pos, identity_quat(), global_frame, stamp);
 
-  // ---------------- Left wall ----------------
-  shape_msgs::msg::SolidPrimitive leftwall_shape;
-  leftwall_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
-  leftwall_shape.dimensions = {0.01, 1.5, 1.5};
-  Eigen::Vector3d leftwall_pos(-0.85, 0, 0.73);
+  // ---------------- Muri della cella (opzionali) ----------------
+  // Pareti sottili alte 1.5 m: dietro il robot (y negativa) e ai lati (x).
+  // Nessun muro davanti: la piattaforma sta a y positiva. Attive solo se la
+  // coordinata nel YAML e' diversa da 0.
+  const bool use_leftwall  = opt.wall_left_x  != 0.0;
+  const bool use_rightwall = opt.wall_right_x != 0.0;
+  const bool use_backwall  = opt.wall_back_y  != 0.0;
+
+  shape_msgs::msg::SolidPrimitive sidewall_shape;
+  sidewall_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
+  sidewall_shape.dimensions = {0.01, 1.5, 1.5};
+  Eigen::Vector3d leftwall_pos(opt.wall_left_x, 0, 0.73);
   moveit_msgs::msg::CollisionObject leftwall =
-      make_obj("leftwall", leftwall_shape, leftwall_pos, identity_quat(),
+      make_obj("leftwall", sidewall_shape, leftwall_pos, identity_quat(),
                global_frame, stamp);
-
-  // ---------------- Right wall ----------------
-  shape_msgs::msg::SolidPrimitive rightwall_shape;
-  rightwall_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
-  rightwall_shape.dimensions = {0.01, 1.5, 1.5};
-  Eigen::Vector3d rightwall_pos(0.85, 0, 0.73);
+  Eigen::Vector3d rightwall_pos(opt.wall_right_x, 0, 0.73);
   moveit_msgs::msg::CollisionObject rightwall =
-      make_obj("rightwall", rightwall_shape, rightwall_pos, identity_quat(),
+      make_obj("rightwall", sidewall_shape, rightwall_pos, identity_quat(),
                global_frame, stamp);
 
-  // ---------------- Back wall ----------------
   shape_msgs::msg::SolidPrimitive backwall_shape;
   backwall_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
   backwall_shape.dimensions = {1.5, 0.01, 1.5};
-  Eigen::Vector3d backwall_pos(0, -0.50, 0.73);
+  Eigen::Vector3d backwall_pos(0, opt.wall_back_y, 0.73);
   moveit_msgs::msg::CollisionObject backwall =
       make_obj("backwall", backwall_shape, backwall_pos, identity_quat(),
                global_frame, stamp);
@@ -293,10 +295,51 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   mesh_pose.orientation = identity_quat();
   artefact.mesh_poses.push_back(mesh_pose);
 
+  // ---------------- Keep-out di margine (opzionali) ----------------
+  // Oggetti "gonfiati" attorno a disco e tavolo: il check di collisione di
+  // MoveIt e' binario, quindi il margine si ottiene facendo collidere il
+  // robot con questi prima che tocchi l'ostacolo vero. Sono oggetti del
+  // mondo: non collidono fra loro ne' con disco e oggetto, solo con il robot.
+  // Un cilindro spesso non si "buca" fra due controlli come una piastra da 4 mm.
+  const bool use_platform_margin = opt.platform_margin > 0.0;
+  const bool use_table_margin = opt.table_margin > 0.0;
+  moveit_msgs::msg::CollisionObject platform_margin, table_margin;
+
+  if (use_platform_margin) {
+    // Il disco simulato e' alto 0.008 centrato su center.z; l'STL e' alto
+    // 0.004 con la faccia superiore su center.z.
+    double disk_thickness = platform_sim ? 0.008 : 0.004;
+    double disk_mid_z = platform_sim ? center.z() : center.z() - 0.002;
+
+    shape_msgs::msg::SolidPrimitive pm_shape;
+    pm_shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
+    pm_shape.dimensions = {disk_thickness + 2.0 * opt.platform_margin,
+                           0.15 + opt.platform_margin};
+    Eigen::Vector3d pm_pos(center.x(), center.y(), disk_mid_z);
+    platform_margin = make_obj("platform_margin", pm_shape, pm_pos,
+                               identity_quat(), global_frame, stamp);
+  }
+
+  if (use_table_margin) {
+    // Lastra alta table_margin sopra il tavolo, sotto la sfera di scansione.
+    // Parte da y = 0.12 per non toccare la colonna della base (raggio ~0.09
+    // attorno all'origine), che altrimenti sarebbe sempre in collisione.
+    const double y_min = 0.12;
+    const double y_max = center.y() + 0.50;
+    shape_msgs::msg::SolidPrimitive tm_shape;
+    tm_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
+    tm_shape.dimensions = {1.0, y_max - y_min, opt.table_margin};
+    Eigen::Vector3d tm_pos(center.x(), (y_min + y_max) / 2.0, opt.table_margin / 2.0);
+    table_margin = make_obj("table_margin", tm_shape, tm_pos,
+                            identity_quat(), global_frame, stamp);
+  }
+
   // ---------------- Assemble the scene ----------------
   scene.world.collision_objects.push_back(table);
   scene.world.collision_objects.push_back(target);
   scene.world.collision_objects.push_back(artefact);
+  if (use_platform_margin) scene.world.collision_objects.push_back(platform_margin);
+  if (use_table_margin)    scene.world.collision_objects.push_back(table_margin);
 
   if (platform_sim) {
     scene.world.collision_objects.push_back(support);
@@ -306,9 +349,9 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   } else {
     scene.world.collision_objects.push_back(platform);
   }
-  // scene.world.collision_objects.push_back(leftwall);
-  // scene.world.collision_objects.push_back(rightwall);
-  // scene.world.collision_objects.push_back(backwall);
+  if (use_leftwall)  scene.world.collision_objects.push_back(leftwall);
+  if (use_rightwall) scene.world.collision_objects.push_back(rightwall);
+  if (use_backwall)  scene.world.collision_objects.push_back(backwall);
 
   // ---------------- Colors ----------------
   scene.object_colors.push_back(make_color("table", 1.0f, 1.0f, 1.0f));
@@ -323,9 +366,17 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   } else {
     scene.object_colors.push_back(make_color("platform", 0.8f, 0.8f, 0.85f));
   }
-  scene.object_colors.push_back(make_color("leftwall", 1.0f, 1.0f, 1.0f));
-  scene.object_colors.push_back(make_color("rightwall", 1.0f, 1.0f, 1.0f));
-  scene.object_colors.push_back(make_color("backwall", 1.0f, 1.0f, 1.0f));
+  // Giallo semitrasparente: si legge come "margine", non come ostacolo.
+  if (use_platform_margin) {
+    scene.object_colors.push_back(make_color("platform_margin", 1.0f, 0.85f, 0.0f, 0.35f));
+  }
+  if (use_table_margin) {
+    scene.object_colors.push_back(make_color("table_margin", 1.0f, 0.85f, 0.0f, 0.35f));
+  }
+  // Muri grigi semitrasparenti, per non nascondere il robot in RViz.
+  if (use_leftwall)  scene.object_colors.push_back(make_color("leftwall",  0.6f, 0.6f, 0.6f, 0.4f));
+  if (use_rightwall) scene.object_colors.push_back(make_color("rightwall", 0.6f, 0.6f, 0.6f, 0.4f));
+  if (use_backwall)  scene.object_colors.push_back(make_color("backwall",  0.6f, 0.6f, 0.6f, 0.4f));
 
   return scene;
 }

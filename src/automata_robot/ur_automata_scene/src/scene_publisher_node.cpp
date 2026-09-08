@@ -29,6 +29,15 @@ public:
     // Parameter: true = disco + 3 gambe (simulato), false = mesh STL della piattaforma reale
     declare_parameter<bool>("platform_sim", true);
 
+    // Parameters: keep-out di margine in metri (0 = nessun oggetto)
+    declare_parameter<double>("platform_margin", 0.0);
+    declare_parameter<double>("table_margin", 0.0);
+
+    // Parameters: muri della cella in metri nel frame globale (0 = nessun muro)
+    declare_parameter<double>("wall_back_y", 0.0);
+    declare_parameter<double>("wall_left_x", 0.0);
+    declare_parameter<double>("wall_right_x", 0.0);
+
     // Create the service client we will call later
     client_ = create_client<moveit_msgs::srv::ApplyPlanningScene>("/apply_planning_scene");
   }
@@ -48,7 +57,13 @@ public:
     }
 
     Eigen::Vector3d center(center_vec[0], center_vec[1], center_vec[2]);
-    bool platform_sim = get_parameter("platform_sim").as_bool();
+    ur_automata_scene::SceneOptions opt;
+    opt.platform_sim    = get_parameter("platform_sim").as_bool();
+    opt.platform_margin = get_parameter("platform_margin").as_double();
+    opt.table_margin    = get_parameter("table_margin").as_double();
+    opt.wall_back_y     = get_parameter("wall_back_y").as_double();
+    opt.wall_left_x     = get_parameter("wall_left_x").as_double();
+    opt.wall_right_x    = get_parameter("wall_right_x").as_double();
 
     // ---------------- Wait for the MoveIt service ----------------
     RCLCPP_INFO(get_logger(), "Waiting for /apply_planning_scene service ...");
@@ -64,7 +79,7 @@ public:
 
     // ---------------- Build the scene ----------------
     moveit_msgs::msg::PlanningScene scene =
-        ur_automata_scene::build_scan_scene(global_frame, center, now(), platform_sim);
+        ur_automata_scene::build_scan_scene(global_frame, center, now(), opt);
 
     // ---------------- Build the service request ----------------
     std::shared_ptr<moveit_msgs::srv::ApplyPlanningScene::Request> request =
@@ -73,9 +88,11 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "Applying scene: %zu objects in frame '%s', center [%.3f, %.3f, %.3f]",
+      "Applying scene: %zu objects in frame '%s', center [%.3f, %.3f, %.3f], "
+      "margins platform %.3f / table %.3f m, walls back %.2f left %.2f right %.2f",
       scene.world.collision_objects.size(), global_frame.c_str(),
-      center.x(), center.y(), center.z());
+      center.x(), center.y(), center.z(), opt.platform_margin, opt.table_margin,
+      opt.wall_back_y, opt.wall_left_x, opt.wall_right_x);
 
     // ---------------- Call the service and wait for the response ----------------
     auto future = client_->async_send_request(request);

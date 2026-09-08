@@ -21,7 +21,23 @@ scan:
                                  # frame `planning.global_frame`. Il punto piu' lontano della sfera
                                  # dista |center| + radius dalla base: tenerlo sotto ~0.91 m.
                                  # La mesh della piattaforma nella scena segue questo valore.
-  platform_sim: false   # true: scena con disco+3 gambe simulati | false: usa il mesh STL meshes/platform.stl
+  platform_sim: false   # true: scena con disco+3 gambe simulati | false: usa il mesh STL meshes/disk.stl
+  # Keep-out di margine (metri, 0 = disattivo), gialli in RViz:
+  #   platform_margin -> cilindro attorno al disco (raggio +m, spessore +2m);
+  #                      protegge anche dal "buco" nel disco da 4 mm fra due check
+  #   table_margin    -> lastra alta m sul tavolo sotto la sfera (da y 0.12, fuori dalla base)
+  # dp8: con 0.02 su entrambi si perde il wp 46 (sotto il disco, lato base) -> tavolo a 0.
+  platform_margin: 0.01
+  table_margin: 0.0
+
+  # Muri della cella (metri nel frame globale, 0 = nessun muro). Dietro e ai
+  # lati, niente davanti: la piattaforma sta a y positiva. Limiti fisici:
+  #   back_y  non oltre -0.42 (a `home` il gomito arriva a y -0.37)
+  #   right_x non sotto  0.75 (a `lower_scan_ready` l'EE arriva a x 0.71)
+  walls:
+    back_y: -0.50
+    left_x: -0.8
+    right_x: 0.8
   radius: 0.30               # raggio della sfera di waypoint, in metri
   hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)
   direction: latitudinal   # latitudinal | longitudinal

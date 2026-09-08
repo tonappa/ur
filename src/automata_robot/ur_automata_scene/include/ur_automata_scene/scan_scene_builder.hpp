@@ -9,18 +9,36 @@
 
 namespace ur_automata_scene {
 
-// Build the planning scene with: table, support disk, target sphere,
-// and three legs that hold the disk in place. All objects are placed
-// in `global_frame`. `center` is the position of the support disk
-// (and the target sphere), expressed in meters.
-// platform_sim:
-//   true  → ricostruisce la piattaforma con disco + 3 gambe cilindriche (modo classico)
-//   false → carica il mesh STL `meshes/platform.stl` (geometria reale)
+// Opzioni della scena, lette da automata_config.yaml (sezione `scan`).
+struct SceneOptions {
+  // true  -> piattaforma ricostruita con disco + 3 gambe cilindriche (modo classico)
+  // false -> mesh STL `meshes/disk.stl` (geometria reale)
+  bool platform_sim = true;
+
+  // Keep-out di margine, in metri (0 = nessun oggetto):
+  //   platform_margin -> cilindro attorno al disco (raggio +m, spessore +2m)
+  //   table_margin    -> lastra alta m sul tavolo, sotto la sfera
+  double platform_margin = 0.0;
+  double table_margin = 0.0;
+
+  // Muri della cella, in metri nel frame globale (0 = nessun muro):
+  //   wall_back_y  -> parete dietro il robot, a y negativa
+  //   wall_left_x  -> parete laterale a x negativa
+  //   wall_right_x -> parete laterale a x positiva
+  double wall_back_y = 0.0;
+  double wall_left_x = 0.0;
+  double wall_right_x = 0.0;
+};
+
+// Build the planning scene with: table, platform, target sphere and artefact,
+// plus the optional keep-outs and walls in `opt`. All objects are placed in
+// `global_frame`. `center` is the top face of the platform (and the target
+// sphere), expressed in meters.
 moveit_msgs::msg::PlanningScene build_scan_scene(
     const std::string & global_frame,
     const Eigen::Vector3d & center,
     const rclcpp::Time & stamp,
-    bool platform_sim);
+    const SceneOptions & opt);
 
 }  // namespace ur_automata_scene
 

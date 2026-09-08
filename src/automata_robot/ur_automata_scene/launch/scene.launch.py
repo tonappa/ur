@@ -25,6 +25,9 @@ def generate_launch_description():
     global_frame = cfg["planning"]["global_frame"]
     scan_center = [float(v) for v in cfg["scan"]["center"]]
     platform_sim = bool(cfg["scan"].get("platform_sim", True))
+    platform_margin = float(cfg["scan"].get("platform_margin", 0.0))
+    table_margin = float(cfg["scan"].get("table_margin", 0.0))
+    walls = cfg["scan"].get("walls", {}) or {}
 
     scene_node = Node(
         package="ur_automata_scene",
@@ -35,6 +38,11 @@ def generate_launch_description():
             "global_frame": global_frame,
             "scan_center": scan_center,
             "platform_sim": platform_sim,
+            "platform_margin": platform_margin,
+            "table_margin": table_margin,
+            "wall_back_y": float(walls.get("back_y", 0.0)),
+            "wall_left_x": float(walls.get("left_x", 0.0)),
+            "wall_right_x": float(walls.get("right_x", 0.0)),
         }],
     )
 

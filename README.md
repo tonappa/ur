@@ -430,6 +430,22 @@ disco: se quello reale ne ha uno, va aggiunto prima di scansionare l'emisfero
 inferiore sul robot vero. L'oggetto da scansionare è `meshes/ceramic_model.obj`,
 piazzato in `scan.center`.
 
+`platform_margin` e `table_margin` (metri, `0` = disattivo) aggiungono due
+keep-out gialli semitrasparenti: un cilindro attorno al disco (raggio +margine,
+spessore +2·margine) e una lastra alta *margine* sul tavolo sotto la sfera, che
+parte da y = 0.12 per non toccare la base. Il check di collisione di MoveIt è
+binario, quindi il margine si ottiene così; vale per il filtro dei candidati IK
+e per i planner, percorsi inclusi. Un oggetto spesso non si "buca" fra due
+controlli come una piastra da 4 mm. Attenzione sotto il disco: fra tavolo e
+piattaforma ci sono ~28 cm e il braccio entra di taglio, 2 cm di margine da
+entrambi i lati bastano a perdere i waypoint più bassi.
+
+`walls` (`back_y`, `left_x`, `right_x`, metri, `0` = nessun muro) aggiunge le
+pareti della cella dietro e ai lati del robot, mai davanti. Limitano lo spazio
+in cui i planner possono deviare, non accorciano i percorsi al suo interno.
+Vincoli: `back_y` non oltre −0.42 (a `home` il gomito arriva a y −0.37),
+`right_x` non sotto 0.75 (a `lower_scan_ready` l'end effector arriva a x 0.71).
+
 Il punto della sfera più lontano dalla base dista `|scan.center| + radius`:
 con questo end effector il limite pratico dell'UR5e è ~0.92 m, quindi con
 `radius: 0.30` il centro deve stare entro ~0.60 m dalla base.
