@@ -8,8 +8,8 @@ robot:
   # Esempio robot a muro, asse pan (Z base) rivolto verso la piattaforma, X invariato:
   #   base_xyz: [0.133, -0.25, 0.455]     base_rpy: [-1.5708, 0.0, 0.0]
   #   e planning.home_pose_name / lower_home_pose_name: home_wall
-  base_xyz: [0.133, -0.25, 0.455]   # metri
-  base_rpy: [-1.5708, 0.0, 0.0]    # radianti: roll (X), pitch (Y), yaw (Z)
+  base_xyz: [0.0, 0.0, 0.0]         # metri
+  base_rpy: [0.0, 0.0, 0.0]         # radianti: roll (X), pitch (Y), yaw (Z)
 
 planning:
   group: ur_manipulator
@@ -21,8 +21,8 @@ planning:
   # (lower_home_pose_name). Sono in giunti, quindi dipendono da robot.base_rpy:
   #   base in origine -> home / lower_scan_ready
   #   base a muro     -> home_wall / home_wall (le altre finiscono nella piattaforma)
-  home_pose_name: home_wall
-  lower_home_pose_name: home_wall
+  home_pose_name: home
+  lower_home_pose_name: lower_scan_ready
   use_moveit: true                     # use moveit
   use_scene: true                      # spawn scene with MoveIt, scene defined in ur_automata_scene pkg
   use_rviz: true                       # launch RViz alongside MoveIt
@@ -37,6 +37,12 @@ scan:
   #   [0.133, 0.375, 0.455] 82/82, 139 s, 2457 candidati (anello basso 202): stessa distanza dalla
   #                         base ma sfera piu' orizzontale e bassa -> scelta. wp 46/47 restano a 1-2
   #                         candidati per autocollisione EE<->avambraccio, nessuna posizione li sposta.
+  #                         Rerun 2026-09-08 dopo il muro: 82/82, 124 s, PTP 81 / OMPL 2, 2274 candidati.
+  # Robot a muro (robot.base_xyz/base_rpy sopra, home_wall), vedi §10:
+  #   [0.133, 0.375, 0.455] base z 0.455, centro a 0.625 m dalla flangia: 63/82, 276 s, 19 persi
+  #                         tutti nell'inferiore (braccio attraverso il disco), scena senza parete
+  #   [0.133, 0.40, 0.50]   base z 0.50, centro a 0.65 m dalla flangia, parete nella scena: enumerazione
+  #                         82/82 (2471 candidati, 80% tratti bloccati), scan non eseguito -> tornati al tavolo
   center: [0.133, 0.375, 0.455]  # centro del supporto (faccia superiore del disco), in metri, nel
                                  # frame `planning.global_frame`. Il punto piu' lontano della sfera
                                  # dista |center| + radius dalla base: tenerlo sotto ~0.91 m.
