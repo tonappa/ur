@@ -356,9 +356,10 @@ Il nodo:
    la scena o con il braccio che occlude la vista camera→centro;
 3. sceglie la sequenza con una **DP a strati**, minimizzando lo spostamento nei
    giunti tra waypoint consecutivi;
-4. esegue, waypoint per waypoint, con planner primario + planner di riserva e
-   fallback su un punto vicino se il waypoint è irraggiungibile;
-5. torna a `home` e stampa il riepilogo (raggiunti / falliti, cause, tempo).
+4. esegue, waypoint per waypoint, provando la catena di planner `planners` e
+   ripiegando su un punto vicino se il waypoint è irraggiungibile;
+5. torna a `home` e stampa il riepilogo (raggiunti / falliti, cause, tempo,
+   quante volte è stato usato ciascun planner).
 
 **Lo scan parte sempre in pausa.** Per farlo partire:
 
@@ -411,13 +412,29 @@ come riferimento/backup e i suoi service sono `/scan_executor_node/start` e
 |---|---|
 | `ik_timeout` | timeout di una singola `setFromIK` in esecuzione. Con TRAC-IK bastano 5–50 ms |
 | `enum_ik_timeout` | timeout della IK in fase di enumerazione (`scan_sequence_node`). Costo massimo della fase = waypoint × pitch × seed × timeout |
-| `planner` | `pilz_ptp` (deterministico, ~10 ms, retta in joint space), `pilz_lin` (lineare cartesiano, rischio singolarità), `ompl` |
-| `fallback_planner` | planner di riserva quando il primario fallisce; `none` per disattivarlo. Combinazione tipica: `pilz_ptp` + `ompl` |
-| `ompl_algorithm` | usato solo con `planner: ompl` (`RRTConnect`, `RRTstar`, `PRM`, …) |
+| `planners` | catena di `scan_sequence_node`: ogni tratto prova i planner in ordine e si ferma al primo che riesce. Default `[pilz_ptp, ompl]`; la catena completa `[pilz_circ, pilz_ptp, stomp, ompl]` è stata misurata più lenta (262 s contro 140 s) senza ridurre i tratti su OMPL |
+| `planner` | planner di `scan_executor_node` (nodo di backup): `pilz_ptp`, `pilz_lin`, `ompl` |
+| `ompl_algorithm` | usato quando si pianifica con OMPL (`RRTConnect`, `RRTstar`, `PRM`, …) |
 | `planning_time`, `planning_attempts` | tempo e tentativi indipendenti per waypoint. In scena affollata alzare a 10–15 s aiuta i punti difficili |
 | `fallback_search`, `fallback_radius_mm`, `fallback_planning_time`, `fallback_max_plan_attempts` | ricerca di un punto alternativo vicino a un waypoint fallito |
 
+Le voci ammesse in `planners`:
+
+| voce | cosa fa | quando fallisce |
+|---|---|---|
+| `pilz_circ` | arco sulla sfera con centro `scan.center`: il TCP resta sulla sfera e la camera inquadra l'oggetto per tutto il tratto | se non si parte da un punto della sfera (da `home` e dalle pose di recovery viene saltato), vicino alle singolarità, o se l'arco collide |
+| `pilz_ptp` | retta in joint space, deterministica, ~10 ms | quando la retta attraversa un ostacolo |
+| `stomp` | parte dalla stessa retta e la deforma finché esce dalla collisione: percorso liscio e ripetibile | quando l'ostacolo è troppo grande per una deformazione locale |
+| `ompl` | RRTConnect: trova quasi sempre un percorso, ma diverso a ogni run | raramente; è l'ultima risorsa |
+
+Il riepilogo finale stampa la riga `Planner usati:` con il conteggio per
+planner: è la metrica con cui si confrontano due run. Molti tratti su `ompl`
+significano movimenti ampi e imprevedibili.
+
 > `pilz_*` **ignora** il path constraint usato quando `lock_pitch: false`.
+> `pilz_circ` fa eccezione: usa un path constraint proprio (il centro
+> dell'arco), che il nodo imposta e rimuove attorno al singolo tentativo.
+> `stomp` ha bisogno di `stomp_planning.yaml` in `ur_automata_moveit_config/config`.
 
 **Scena**
 
@@ -463,7 +480,7 @@ start_ursim_seccomp.sh   avvio URSim con workaround seccomp
 src/automata_robot/
   ur_automata_bringup/         config unica + launch di alto livello (control, moveit, bringup) + RViz
   ur_automata_description/     URDF/xacro della cella, mesh dell'end effector, launch di sola visualizzazione
-  ur_automata_moveit_config/   SRDF, kinematics (TRAC-IK), limiti, pipeline OMPL e Pilz, controller MoveIt, launch generati
+  ur_automata_moveit_config/   SRDF, kinematics (TRAC-IK), limiti, pipeline OMPL/Pilz/STOMP, controller MoveIt, launch generati
   ur_automata_scene/           planning scene: tavolo, piattaforma, oggetto; mesh STL/OBJ
   ur_automata_scan/            generazione waypoint sferici, planner di sequenza (DP), nodi esecutori
 
@@ -503,7 +520,7 @@ end effector significa aggiornare mesh **e** offset del TCP in
 | Traiettorie plausibili ma posizioni sbagliate | `ur_type` diverso tra control e moveit, oppure manca il file di calibrazione sul robot reale |
 | Non vedo i marker dei waypoint in RViz | RViz deve girare con `automata.rviz` (lo fa il bringup) e il display **Scan waypoints** deve essere abilitato; il topic è `/scan_waypoints_markers` |
 | Molti waypoint falliscono in IK | `radius` troppo grande o `center` troppo lontano dalla base: la sfera esce dalla portata del braccio |
-| Molti fallimenti in plan | alza `planning_time` e `planning_attempts`, oppure imposta `fallback_planner: ompl` |
+| Molti fallimenti in plan | alza `planning_time` e `planning_attempts`, oppure aggiungi `ompl` in fondo a `planners` |
 | Plan fallito in pochi ms con `INVALID_MOTION_PLAN`, in move_group `ValidateSolution: Computed path is not valid` | il planner ha trovato un percorso ma lo ha controllato a passo troppo largo e sfiora un ostacolo sottile: abbassa `longest_valid_segment_fraction` in `config/ompl_planning.yaml` (oggi 0.001 ≈ 1.5°) |
 | move_group avvisa `Cannot find planning configuration ... kConfigDefault` | manca la voce in `planner_configs` di `ompl_planning.yaml`: OMPL ignora `scan.ompl_algorithm` e usa RRTConnect |
 | RViz non si apre dal container | `xhost +local:docker` (lo fa già `./run.sh run`) e `DISPLAY` valorizzato sull'host |

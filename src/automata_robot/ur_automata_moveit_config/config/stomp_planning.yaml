@@ -1,0 +1,29 @@
+# Pipeline STOMP. MoveItConfigsBuilder carica da solo ogni config/*_planning.yaml
+# di questo package come pipeline con id pari al prefisso del nome file: questo
+# file basta a rendere disponibile la pipeline `stomp` in move_group.
+#
+# Usata da scan_sequence_node come ripiego di Pilz PTP: STOMP parte dalla stessa
+# retta in joint space e la deforma quanto basta per uscire dalla collisione,
+# invece di ricampionare tutto lo spazio come RRTConnect.
+# Parametri: default di moveit_configs_utils, non ancora tarati sulla cella.
+planning_plugins:
+  - stomp_moveit/StompPlanner
+request_adapters:
+  - default_planning_request_adapters/ResolveConstraintFrames
+  - default_planning_request_adapters/ValidateWorkspaceBounds
+  - default_planning_request_adapters/CheckStartStateBounds
+  - default_planning_request_adapters/CheckStartStateCollision
+response_adapters:
+  - default_planning_response_adapters/AddTimeOptimalParameterization
+  - default_planning_response_adapters/ValidateSolution
+  - default_planning_response_adapters/DisplayMotionPath
+
+stomp_moveit:
+  num_timesteps: 60
+  num_iterations: 40
+  num_iterations_after_valid: 0
+  num_rollouts: 30
+  max_rollouts: 30
+  exponentiated_cost_sensitivity: 0.8
+  control_cost_weight: 0.1
+  delta_t: 0.1

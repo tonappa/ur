@@ -2,7 +2,8 @@
 // Differenze rispetto al nodo originale:
 //   Step 1: ogni candidato IK viene controllato contro la planning scene
 //           (collisioni con scena e auto-collisioni) PRIMA di chiamare plan().
-//   Step 2: planner primario + planner di riserva (es. Pilz PTP -> OMPL).
+//   Step 2: catena di planner (Pilz CIRC -> Pilz PTP -> STOMP -> OMPL): ogni
+//           tratto prova i planner in ordine e si ferma al primo che riesce.
 //   Step 3: prima di muovere il robot si enumerano TUTTE le configurazioni
 //           valide di ogni waypoint (pitch x rami IK) e una programmazione
 //           dinamica a strati sceglie la sequenza con il percorso minimo nei
@@ -42,6 +43,7 @@
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <moveit_msgs/msg/constraints.hpp>
 #include <moveit_msgs/msg/orientation_constraint.hpp>
+#include <moveit_msgs/msg/position_constraint.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
 #include "ur_automata_scan/sphere_waypoint_generator.hpp"
@@ -252,10 +254,13 @@ static double joint_distance(
 }
 
 // Returns true if any arm link falls inside the camera's view cone toward the
-// sphere center. We only check links that are between the TCP and the center
-// (not behind the camera) and within threshold_rad of the camera-to-center axis.
-// Links too close to the TCP (< 1 cm) are ignored — they are part of the wrist
-// and can't physically occlude the scene.
+// sphere center. The arm is treated as a chain of segments between the origins
+// of consecutive joints (shoulder -> elbow -> wrist 1 -> 2 -> 3); every segment
+// is sampled in a few points and each point is tested against the cone, so a
+// long link crossing the line of sight is caught even when its origin lies far
+// off-axis (checking origins only let the forearm sit in front of the camera).
+// Only points between the TCP and the center count (not behind the camera);
+// points closer than 1 cm to the TCP belong to the wrist and are skipped.
 static bool is_arm_occluding(
   const moveit::core::RobotState & state,
   const moveit::core::JointModelGroup * jmg,
@@ -267,22 +272,28 @@ static bool is_arm_occluding(
   Eigen::Vector3d view_dir = (center - tcp_pos).normalized();
   double dist_to_center    = (center - tcp_pos).norm();
 
-  for (const auto * link : jmg->getLinkModels()) {
-    if (link->getName() == ee_link) continue;
+  // Skeleton: origin of the child link of every active joint, in chain order.
+  std::vector<Eigen::Vector3d> skeleton;
+  for (const auto * joint : jmg->getActiveJointModels()) {
+    skeleton.push_back(state.getGlobalLinkTransform(joint->getChildLinkModel()).translation());
+  }
 
-    Eigen::Vector3d link_pos = state.getGlobalLinkTransform(link->getName()).translation();
-    Eigen::Vector3d to_link  = link_pos - tcp_pos;
-    double dist = to_link.norm();
+  const int samples = 5;   // points per segment, both ends included
+  for (size_t i = 0; i + 1 < skeleton.size(); ++i) {
+    for (int k = 0; k < samples; ++k) {
+      double t = static_cast<double>(k) / (samples - 1);
+      Eigen::Vector3d point = skeleton[i] + t * (skeleton[i + 1] - skeleton[i]);
+      Eigen::Vector3d to_point = point - tcp_pos;
+      double dist = to_point.norm();
+      if (dist < 0.01) continue;
 
-    // Skip links that are too close to the TCP (wrist area) or behind the camera
-    if (dist < 0.01) continue;
+      double cos_angle = view_dir.dot(to_point / dist);
+      double angle = std::acos(std::clamp(cos_angle, -1.0, 1.0));
 
-    double cos_angle = view_dir.dot(to_link / dist);
-    double angle = std::acos(std::clamp(cos_angle, -1.0, 1.0));
-
-    // Link is inside the view cone AND closer than the center (i.e. in the way)
-    if (angle < threshold_rad && dist < dist_to_center) {
-      return true;
+      // Point is inside the view cone AND closer than the center (i.e. in the way)
+      if (angle < threshold_rad && dist < dist_to_center) {
+        return true;
+      }
     }
   }
   return false;
@@ -616,22 +627,27 @@ static planning_scene::PlanningScenePtr fetch_planning_scene(
 }
 
 // ============================================================================
-// Planner primario + planner di riserva (Step 2)
+// Catena di planner (Step 2)
 // ============================================================================
 struct PlannerChoice {
   std::string pipeline;   // es. "pilz_industrial_motion_planner" oppure "ompl"
   std::string planner;    // es. "PTP" oppure "RRTConnectkConfigDefault"
+  bool is_circ = false;   // Pilz CIRC: vuole il vincolo "center" e uno start sulla sfera
   std::string label() const { return pipeline + "/" + planner; }
 };
 
 struct PlannerSetup {
-  PlannerChoice primary;
-  PlannerChoice fallback;
-  bool has_fallback = false;
+  std::vector<PlannerChoice> chain;           // provati in ordine, ci si ferma al primo che riesce
+  moveit_msgs::msg::Constraints circ_center;  // vincolo di percorso richiesto da CIRC
 };
 
-// Traduce la stringa del YAML ("ompl", "pilz_ptp", "pilz_lin") in
-// (pipeline, planner_id). Ritorna false se la stringa non e' riconosciuta.
+// Quante volte ogni planner ha prodotto il piano poi eseguito. E' la metrica con
+// cui si confrontano i run: l'obiettivo e' avere quasi tutto su CIRC/PTP e OMPL
+// vicino a zero. Include anche le recovery e il ritorno a home.
+static std::map<std::string, int> g_planner_hits;
+
+// Traduce la stringa del YAML ("ompl", "pilz_ptp", "pilz_lin", "pilz_circ",
+// "stomp") in (pipeline, planner_id). Ritorna false se non e' riconosciuta.
 static bool resolve_planner(const std::string & name, const std::string & ompl_algorithm,
                             PlannerChoice & out)
 {
@@ -641,10 +657,43 @@ static bool resolve_planner(const std::string & name, const std::string & ompl_a
     out = {"pilz_industrial_motion_planner", "PTP"};
   } else if (name == "pilz_lin") {
     out = {"pilz_industrial_motion_planner", "LIN"};
+  } else if (name == "pilz_circ") {
+    out = {"pilz_industrial_motion_planner", "CIRC", true};
+  } else if (name == "stomp") {
+    out = {"stomp", "stomp"};
   } else {
     return false;
   }
   return true;
+}
+
+// Vincolo di percorso che Pilz CIRC usa come centro dell'arco: nome "center",
+// una sola PositionConstraint sul link del TCP, il centro in primitive_poses.
+// La constraint_region resta di proposito SENZA primitives: Pilz legge solo la
+// posizione, mentre il response adapter ValidateSolution ricontrolla il percorso
+// anche contro req.path_constraints. Con una regione vera (il TCP "dentro" il
+// centro della sfera) ogni arco verrebbe scartato; senza regione il vincolo
+// risulta disabilitato lato MoveIt e la validazione lo ignora.
+static moveit_msgs::msg::Constraints make_circ_center_constraint(
+  const std::string & frame, const std::string & link, const Eigen::Vector3d & center)
+{
+  moveit_msgs::msg::Constraints constraints;
+  constraints.name = "center";
+
+  moveit_msgs::msg::PositionConstraint pc;
+  pc.header.frame_id = frame;
+  pc.link_name = link;
+  pc.weight = 1.0;
+
+  geometry_msgs::msg::Pose center_pose;
+  center_pose.position.x = center.x();
+  center_pose.position.y = center.y();
+  center_pose.position.z = center.z();
+  center_pose.orientation.w = 1.0;
+  pc.constraint_region.primitive_poses.push_back(center_pose);
+
+  constraints.position_constraints.push_back(pc);
+  return constraints;
 }
 
 // Nome leggibile del codice d'errore di plan(). I codici sono quelli di
@@ -655,7 +704,7 @@ static std::string plan_error_name(int code)
   switch (code) {
     case Codes::FAILURE:                              return "FAILURE (generico: vedi il terminale del bringup)";
     case Codes::PLANNING_FAILED:                      return "PLANNING_FAILED";
-    case Codes::INVALID_MOTION_PLAN:                  return "INVALID_MOTION_PLAN (percorso trovato ma scartato da ValidateSolution)";
+    case Codes::INVALID_MOTION_PLAN:                  return "INVALID_MOTION_PLAN (scartato da ValidateSolution; con CIRC anche raggio o piano dell'arco non validi)";
     case Codes::TIMED_OUT:                            return "TIMED_OUT";
     case Codes::START_STATE_IN_COLLISION:             return "START_STATE_IN_COLLISION";
     case Codes::START_STATE_VIOLATES_PATH_CONSTRAINTS: return "START_STATE_VIOLATES_PATH_CONSTRAINTS";
@@ -668,40 +717,88 @@ static std::string plan_error_name(int code)
   }
 }
 
-// plan() con il planner primario; se fallisce e c'e' un fallback, riprova con
-// quello. Il target (joint / pose / named) va impostato PRIMA dal chiamante.
-// Al ritorno il planner primario e' di nuovo quello attivo.
+// True se l'ultimo punto della traiettoria coincide con il target in giunti.
+// Serve per CIRC: Pilz riceve il goal in joint space ma ricava i giunti lungo
+// l'arco con l'IK, seme = campione precedente, e puo' finire su un ramo IK
+// diverso da quello scelto dalla DP. In quel caso il tratto successivo
+// partirebbe da uno stato non previsto, quindi il piano va scartato.
+// ponytail: soglia fissa a 0.01 rad, i rami IK distano decimi di radiante;
+// portarla in configurazione solo se comparissero scarti ingiustificati.
+static bool trajectory_ends_at_target(
+  const moveit::planning_interface::MoveGroupInterface::Plan & plan,
+  const moveit::planning_interface::MoveGroupInterface & move_group)
+{
+  const auto & jt = plan.trajectory.joint_trajectory;
+  if (jt.points.empty()) return false;
+
+  const auto & last = jt.points.back().positions;
+  if (last.size() != jt.joint_names.size()) return false;
+
+  const moveit::core::JointModelGroup * jmg =
+    move_group.getRobotModel()->getJointModelGroup(move_group.getName());
+  if (jmg == nullptr) return false;
+
+  // Il target impostato dal chiamante, associato per nome: l'ordine dei giunti
+  // nella traiettoria non e' per forza quello delle variabili del gruppo.
+  std::vector<double> target_values;
+  move_group.getJointValueTarget(target_values);
+  const std::vector<std::string> & target_names = jmg->getVariableNames();
+  if (target_values.size() != target_names.size()) return false;
+
+  std::map<std::string, double> target;
+  for (size_t k = 0; k < target_names.size(); ++k) {
+    target[target_names[k]] = target_values[k];
+  }
+
+  for (size_t k = 0; k < jt.joint_names.size(); ++k) {
+    auto it = target.find(jt.joint_names[k]);
+    if (it == target.end()) continue;   // giunto fuori dal gruppo: ignorato
+    if (std::abs(wrap_pi(last[k] - it->second)) > 0.01) return false;
+  }
+  return true;
+}
+
+// plan() lungo la catena di planner: si prova un planner alla volta nell'ordine
+// della catena e ci si ferma al primo che riesce. Il target (joint / pose /
+// named) va impostato PRIMA dal chiamante.
+// `allow_circ` = false salta Pilz CIRC: senza uno start gia' sulla sfera di
+// scansione i due estremi dell'arco hanno raggi diversi e CIRC fallisce sempre
+// (e' il caso di home e delle pose di recovery).
 static bool plan_with_fallback(
   moveit::planning_interface::MoveGroupInterface & move_group,
   moveit::planning_interface::MoveGroupInterface::Plan & plan,
   const PlannerSetup & planners,
+  bool allow_circ,
   const rclcpp::Logger & logger)
 {
-  move_group.setPlanningPipelineId(planners.primary.pipeline);
-  move_group.setPlannerId(planners.primary.planner);
-  moveit::core::MoveItErrorCode code = move_group.plan(plan);
-  if (code == moveit::core::MoveItErrorCode::SUCCESS) return true;
-  if (!planners.has_fallback) {
-    RCLCPP_WARN(logger, "plan con %s fallito: %s",
-                planners.primary.label().c_str(), plan_error_name(code.val).c_str());
-    return false;
-  }
+  for (const PlannerChoice & choice : planners.chain) {
+    if (choice.is_circ && !allow_circ) continue;
 
-  RCLCPP_WARN(logger, "plan con %s fallito (%s), ritento con %s",
-              planners.primary.label().c_str(), plan_error_name(code.val).c_str(),
-              planners.fallback.label().c_str());
-  move_group.setPlanningPipelineId(planners.fallback.pipeline);
-  move_group.setPlannerId(planners.fallback.planner);
-  code = move_group.plan(plan);
-  bool ok = (code == moveit::core::MoveItErrorCode::SUCCESS);
-  if (!ok) {
-    RCLCPP_WARN(logger, "plan con %s fallito: %s",
-                planners.fallback.label().c_str(), plan_error_name(code.val).c_str());
-  }
+    move_group.setPlanningPipelineId(choice.pipeline);
+    move_group.setPlannerId(choice.planner);
+    // Il vincolo "center" serve solo a CIRC: gli altri planner devono partire
+    // senza path constraints, quindi si mette qui e si toglie subito dopo,
+    // riuscito o fallito che sia il tentativo.
+    if (choice.is_circ) move_group.setPathConstraints(planners.circ_center);
 
-  move_group.setPlanningPipelineId(planners.primary.pipeline);
-  move_group.setPlannerId(planners.primary.planner);
-  return ok;
+    moveit::core::MoveItErrorCode code = move_group.plan(plan);
+    if (choice.is_circ) move_group.clearPathConstraints();
+
+    if (code != moveit::core::MoveItErrorCode::SUCCESS) {
+      RCLCPP_WARN(logger, "plan con %s fallito: %s",
+                  choice.label().c_str(), plan_error_name(code.val).c_str());
+      continue;
+    }
+    if (choice.is_circ && !trajectory_ends_at_target(plan, move_group)) {
+      RCLCPP_WARN(logger, "plan con %s scartato: l'arco termina su un ramo IK diverso dal target",
+                  choice.label().c_str());
+      continue;
+    }
+
+    ++g_planner_hits[choice.label()];
+    return true;
+  }
+  return false;
 }
 
 static bool go_home(moveit::planning_interface::MoveGroupInterface & move_group,
@@ -717,7 +814,8 @@ static bool go_home(moveit::planning_interface::MoveGroupInterface & move_group,
   move_group.setNamedTarget(home_pose_name);
 
   moveit::planning_interface::MoveGroupInterface::Plan home_plan;
-  if (!plan_with_fallback(move_group, home_plan, planners, logger)) {
+  // CIRC escluso: home e le pose di recovery non stanno sulla sfera di scansione.
+  if (!plan_with_fallback(move_group, home_plan, planners, false, logger)) {
     RCLCPP_ERROR(logger, "Recovery failed: could not plan to '%s'.", home_pose_name.c_str());
     return false;
   }
@@ -830,8 +928,10 @@ int main(int argc, char ** argv)
   node->declare_parameter<double>     ("scan_fallback_radius_mm",           20.0);
   node->declare_parameter<double>     ("scan_fallback_planning_time",        3.0);
   node->declare_parameter<int>        ("scan_fallback_max_plan_attempts",    3);
-  node->declare_parameter<std::string>("scan_planner",                "ompl");
-  node->declare_parameter<std::string>("scan_fallback_planner",       "ompl");
+  // Catena di planner, provati in ordine. Il default riproduce il comportamento
+  // storico: retta in joint space, OMPL quando la retta collide.
+  node->declare_parameter<std::vector<std::string>>("scan_planners",
+                                                    std::vector<std::string>{"pilz_ptp", "ompl"});
   node->declare_parameter<std::string>("scan_ompl_algorithm",         "RRTConnect");
   node->declare_parameter<double>     ("scan_pitch_search_range_deg", 90.0);
   node->declare_parameter<double>     ("scan_pitch_search_step_deg",  15.0);
@@ -865,8 +965,7 @@ int main(int argc, char ** argv)
     node->get_parameter("scan_occlusion_threshold_deg").as_double() * M_PI / 180.0;
   const bool        fallback_search     = node->get_parameter("scan_fallback_search").as_bool();
   const double      fallback_radius_mm  = node->get_parameter("scan_fallback_radius_mm").as_double();
-  const std::string planner_str     = node->get_parameter("scan_planner").as_string();
-  const std::string fallback_planner_str = node->get_parameter("scan_fallback_planner").as_string();
+  const std::vector<std::string> planner_names = node->get_parameter("scan_planners").as_string_array();
   const std::string ompl_algorithm  = node->get_parameter("scan_ompl_algorithm").as_string();
   const double      pitch_range_deg = node->get_parameter("scan_pitch_search_range_deg").as_double();
   const double      pitch_step_deg  = node->get_parameter("scan_pitch_search_step_deg").as_double();
@@ -983,30 +1082,30 @@ int main(int argc, char ** argv)
   move_group.setWorkspace(-0.75, -0.625, -0.25,   // min x,y,z
                           +0.75, +1.125, +1.25);  // max x,y,z
 
-  // Traduce le stringhe del YAML in (pipeline, planner_id). Il primario e'
-  // `scan_planner`; se fallisce si ritenta con `scan_fallback_planner`
-  // ("none" = nessun fallback). Vedi plan_with_fallback().
+  // Traduce la lista `scan_planners` del YAML in una catena ordinata di
+  // (pipeline, planner_id): ogni tratto la percorre e si ferma al primo planner
+  // che riesce. Vedi plan_with_fallback().
   PlannerSetup planners;
-  if (!resolve_planner(planner_str, ompl_algorithm, planners.primary)) {
-    std::fprintf(stderr,
-      "WARNING: scan_planner='%s' unknown, falling back to ompl/%s.\n",
-      planner_str.c_str(), ompl_algorithm.c_str());
-    resolve_planner("ompl", ompl_algorithm, planners.primary);
-  }
-  if (fallback_planner_str != "none") {
-    if (resolve_planner(fallback_planner_str, ompl_algorithm, planners.fallback)) {
-      planners.has_fallback = (planners.fallback.label() != planners.primary.label());
+  for (const std::string & name : planner_names) {
+    PlannerChoice choice;
+    if (resolve_planner(name, ompl_algorithm, choice)) {
+      planners.chain.push_back(choice);
     } else {
-      std::fprintf(stderr,
-        "WARNING: scan_fallback_planner='%s' unknown, nessun planner di riserva.\n",
-        fallback_planner_str.c_str());
+      std::fprintf(stderr, "WARNING: planner '%s' sconosciuto, ignorato.\n", name.c_str());
     }
   }
-  move_group.setPlanningPipelineId(planners.primary.pipeline);
-  move_group.setPlannerId(planners.primary.planner);
-  const std::string planner_label = planners.has_fallback
-    ? planners.primary.label() + "  (riserva: " + planners.fallback.label() + ")"
-    : planners.primary.label();
+  if (planners.chain.empty()) {
+    std::fprintf(stderr, "Nessun planner valido in `planners`: controllare automata_config.yaml.\n");
+    rclcpp::shutdown();
+    return 1;
+  }
+  planners.circ_center = make_circ_center_constraint(global_frame, ee_link, cfg.center);
+
+  std::string planner_label;
+  for (size_t k = 0; k < planners.chain.size(); ++k) {
+    if (k > 0) planner_label += " > ";
+    planner_label += planners.chain[k].label();
+  }
 
   // Copia locale della planning scene per il check collisioni dei candidati IK.
   planning_scene::PlanningScenePtr scene =
@@ -1030,6 +1129,7 @@ int main(int argc, char ** argv)
   //   2) occlusione camera->centro (solo emisfero inferiore)
   // Ritorna true se il candidato e' accettabile.
   int collision_rejects = 0;
+  int occlusion_rejects = 0;
   const auto * jmg = move_group.getRobotModel()->getJointModelGroup(planning_group);
   auto candidate_ok = [&](const moveit::core::RobotState & st, size_t wp_index) -> bool {
     if (scene && scene->isStateColliding(st, planning_group)) {
@@ -1038,6 +1138,7 @@ int main(int argc, char ** argv)
     }
     if (occlusion_check && lower_start_index > 0 && wp_index >= lower_start_index &&
         is_arm_occluding(st, jmg, ee_link, cfg.center, occlusion_threshold_rad)) {
+      ++occlusion_rejects;
       return false;
     }
     return true;
@@ -1350,10 +1451,10 @@ int main(int argc, char ** argv)
     char buf[384];
     std::snprintf(buf, sizeof(buf),
       "Sequenza: %zu/%zu raggiungibili (%zu via fallback), %zu irraggiungibili | "
-      "%zu candidati, %d scartati per collisione | costo DP %.1f, %zu tratti bloccati su %zu controllati, %d iter | "
+      "%zu candidati, %d scartati per collisione, %d per occlusione | costo DP %.1f, %zu tratti bloccati su %zu controllati, %d iter | "
       "enumerazione %.1f s, DP %.1f s",
       reachable, waypoints.size(), via_fallback, waypoints.size() - reachable,
-      total_candidates, collision_rejects, seq.total_cost, blocked_edges_total, edge_cache.size(),
+      total_candidates, collision_rejects, occlusion_rejects, seq.total_cost, blocked_edges_total, edge_cache.size(),
       dp_iterations, enum_seconds, dp_seconds);
     g_sequence_summary = buf;
   }
@@ -1372,6 +1473,10 @@ int main(int argc, char ** argv)
   // FASE 3 - esecuzione della sequenza scelta.
   // ==========================================================================
   auto scan_start_time = std::chrono::steady_clock::now();
+
+  // True quando il robot e' fermo su un waypoint della sfera di scansione: solo
+  // da li' Pilz CIRC puo' pianificare l'arco (start e goal allo stesso raggio).
+  bool on_sphere = false;
 
   for (size_t i = 0; i < waypoints.size(); ++i) {
     if (g_quit.load() || !rclcpp::ok()) break;
@@ -1401,7 +1506,7 @@ int main(int argc, char ** argv)
     move_group.setJointValueTarget(work_state);
 
     moveit::planning_interface::MoveGroupInterface::Plan plan;
-    bool plan_ok = plan_with_fallback(move_group, plan, planners, logger);
+    bool plan_ok = plan_with_fallback(move_group, plan, planners, on_sphere, logger);
 
     if (!plan_ok) {
       // Nessun percorso da dove siamo: passo dalla pose di recovery e riprovo
@@ -1420,10 +1525,11 @@ int main(int argc, char ** argv)
         render_table(rows, lock_pitch, planner_label);
         break;
       }
+      on_sphere = false;   // dopo la recovery il TCP non e' piu' su un waypoint
       rows[i].status = WpStatus::RUNNING;
       render_table(rows, lock_pitch, planner_label);
       move_group.setJointValueTarget(work_state);
-      plan_ok = plan_with_fallback(move_group, plan, planners, logger);
+      plan_ok = plan_with_fallback(move_group, plan, planners, on_sphere, logger);
     }
 
     if (!plan_ok) {
@@ -1445,6 +1551,7 @@ int main(int argc, char ** argv)
         i, static_cast<int>(exec_code.val), exec_code.message.c_str());
       ++failures;
       ++exec_failures;
+      on_sphere = false;   // fermo a meta' traiettoria: posizione non nota
       rows[i].status = WpStatus::HOMING;
       set_marker_color(markers_array, i, COLOR_RED);
       publish_markers(markers_pub, markers_array);
@@ -1463,6 +1570,7 @@ int main(int argc, char ** argv)
 
     // Raggiunto
     ++successes;
+    on_sphere = true;
     rows[i].status = chosen.is_fallback ? WpStatus::FALLBACK_ORIGIN : WpStatus::DONE;
 
     auto current = move_group.getCurrentPose(ee_link);
@@ -1500,7 +1608,16 @@ int main(int argc, char ** argv)
   if (fallback_total > 0) {
     std::printf("  Fallback: %d punti alternativi.", fallback_total);
   }
-  std::printf("\n%sCandidati IK scartati per collisione:%s %d", ansi::BOLD, ansi::RESET, collision_rejects);
+  std::printf("\n%sPlanner usati:%s", ansi::BOLD, ansi::RESET);
+  if (g_planner_hits.empty()) {
+    std::printf(" nessuno");
+  } else {
+    for (const auto & kv : g_planner_hits) {
+      std::printf("  %s %d", kv.first.c_str(), kv.second);
+    }
+  }
+  std::printf("\n%sCandidati IK scartati:%s %d per collisione, %d per occlusione",
+    ansi::BOLD, ansi::RESET, collision_rejects, occlusion_rejects);
   std::printf("\n%sTempo scansione:%s %.1f s (%.1f min)\n",
     ansi::BOLD, ansi::RESET, scan_duration_s, scan_duration_s / 60.0);
   std::fflush(stdout);

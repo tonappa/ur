@@ -27,7 +27,7 @@ scan:
   #                      protegge anche dal "buco" nel disco da 4 mm fra due check
   #   table_margin    -> lastra alta m sul tavolo sotto la sfera (da y 0.12, fuori dalla base)
   # dp8: con 0.02 su entrambi si perde il wp 46 (sotto il disco, lato base) -> tavolo a 0.
-  platform_margin: 0.01
+  platform_margin: 0.0
   table_margin: 0.0
 
   # Muri della cella (metri nel frame globale, 0 = nessun muro). Dietro e ai
@@ -35,9 +35,9 @@ scan:
   #   back_y  non oltre -0.42 (a `home` il gomito arriva a y -0.37)
   #   right_x non sotto  0.75 (a `lower_scan_ready` l'EE arriva a x 0.71)
   walls:
-    back_y: -0.50
-    left_x: -0.8
-    right_x: 0.8
+    back_y: 0.0
+    left_x: 0.0
+    right_x: 0.0
   radius: 0.30               # raggio della sfera di waypoint, in metri
   hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)
   direction: latitudinal   # latitudinal | longitudinal
@@ -100,7 +100,28 @@ scan:
   # Costo massimo della fase: waypoint x pitch x seed x enum_ik_timeout.
   enum_ik_timeout: 0.003
 
-  # Pipeline di motion planning:
+  # Catena di planner di scan_sequence_node: ogni tratto prova i planner in
+  # questo ordine e si ferma al primo che riesce.
+  #   pilz_circ → arco sulla sfera con centro `scan.center`: il TCP resta sulla
+  #               sfera e la camera inquadra l'oggetto per tutto il tratto.
+  #               Serve partire da un punto della sfera, quindi da `home` e
+  #               dalle pose di recovery viene saltato (raggi diversi).
+  #   pilz_ptp  → retta in joint space, deterministica, ~10 ms.
+  #   stomp     → parte dalla stessa retta e la deforma finche' esce dalla
+  #               collisione: percorso ripetibile, senza le deviazioni casuali
+  #               di RRTConnect. Serve `stomp_planning.yaml` in
+  #               ur_automata_moveit_config/config.
+  #   ompl      → RRTConnect, ultima risorsa.
+  # Il centro dell'arco e' letto in `planning.global_frame`, che deve coincidere
+  # con il frame radice del modello (qui `world`).
+  # dp10 con [pilz_circ, pilz_ptp, stomp, ompl]: 262 s contro 143 s di dp7 e
+  # OMPL usato 5 volte invece di 6 -> archi piu' lenti delle rette, 25 CIRC
+  # falliti (polso oltre i limiti di accelerazione) e 5 STOMP in timeout.
+  # Si resta su retta + OMPL; la catena resta disponibile per altre prove.
+  planners: [pilz_ptp, ompl]
+
+  # Planner di scan_executor_node (nodo di backup, scan.launch.py). Non usato da
+  # scan_sequence_node, che segue la catena `planners` qui sopra.
   #   ompl     → OMPL (sampling-based, supporta path constraints)
   #   pilz_ptp → Pilz Industrial Motion Planner, point-to-point in joint-space (rapido, deterministico, no constraints)
   #   pilz_lin → Pilz LIN, lineare in cartesiano (rischio singolarità)
@@ -108,14 +129,8 @@ scan:
   # NB: per usare pilz_* serve `pilz_industrial_motion_planner_planning.yaml` in ur_automata_moveit_config/config.
   planner: pilz_ptp
 
-  # Planner di riserva (usato solo da scan_sequence_node): se il primario
-  # fallisce, si ritenta con questo. Combinazione tipica:
-  #   planner: pilz_ptp   (deterministico, ~10 ms, retta in joint space)
-  #   fallback_planner: ompl   (solo quando la retta in joint space collide)
-  # "none" = nessun planner di riserva.
-  fallback_planner: ompl
-
-  # Algoritmo OMPL (usato solo se planner=ompl, ignorato altrimenti).
+  # Algoritmo OMPL, usato quando si pianifica con OMPL (voce `ompl` in
+  # `planners`, oppure `planner: ompl`). Ignorato dagli altri planner.
   # Opzioni tipiche dell'ompl_planning.yaml upstream UR:
   #   RRTConnect (default, bidirezionale, veloce, non ottimo)
   #   RRT, RRTstar (asintoticamente ottimo), TRRT, BiTRRT, LBTRRT
