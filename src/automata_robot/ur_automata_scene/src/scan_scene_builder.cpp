@@ -175,6 +175,34 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
       make_obj("backwall", backwall_shape, backwall_pos, identity_quat(),
                global_frame, stamp);
 
+  // ---------------- Parete di montaggio (base non in origine) ----------------
+  // Lastra 1.5 x 1.5 x 0.05 m perpendicolare all'asse Z della base, con la
+  // faccia superiore 5 mm sotto il piano della flangia cosi' la base non la
+  // tocca. Con la base in origine il ruolo lo fa gia' il tavolo.
+  const bool use_mountwall = !opt.base_xyz.isZero() || !opt.base_rpy.isZero();
+  moveit_msgs::msg::CollisionObject mountwall;
+  if (use_mountwall) {
+    const double thickness = 0.05;
+    // rpy della URDF: rotazioni fisse roll (X), pitch (Y), yaw (Z)
+    Eigen::Quaterniond base_q =
+        Eigen::AngleAxisd(opt.base_rpy.z(), Eigen::Vector3d::UnitZ()) *
+        Eigen::AngleAxisd(opt.base_rpy.y(), Eigen::Vector3d::UnitY()) *
+        Eigen::AngleAxisd(opt.base_rpy.x(), Eigen::Vector3d::UnitX());
+    Eigen::Vector3d mw_pos =
+        opt.base_xyz + base_q * Eigen::Vector3d(0.0, 0.0, -0.005 - thickness / 2.0);
+
+    shape_msgs::msg::SolidPrimitive mw_shape;
+    mw_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
+    mw_shape.dimensions = {1.5, 1.5, thickness};
+
+    geometry_msgs::msg::Quaternion mw_q;
+    mw_q.x = base_q.x();
+    mw_q.y = base_q.y();
+    mw_q.z = base_q.z();
+    mw_q.w = base_q.w();
+    mountwall = make_obj("mountwall", mw_shape, mw_pos, mw_q, global_frame, stamp);
+  }
+
   // ---------------- Target sphere (internal marker) ----------------
   shape_msgs::msg::SolidPrimitive sphere_shape;
   sphere_shape.type = shape_msgs::msg::SolidPrimitive::SPHERE;
@@ -352,6 +380,7 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   if (use_leftwall)  scene.world.collision_objects.push_back(leftwall);
   if (use_rightwall) scene.world.collision_objects.push_back(rightwall);
   if (use_backwall)  scene.world.collision_objects.push_back(backwall);
+  if (use_mountwall) scene.world.collision_objects.push_back(mountwall);
 
   // ---------------- Colors ----------------
   scene.object_colors.push_back(make_color("table", 1.0f, 1.0f, 1.0f));
@@ -377,6 +406,7 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   if (use_leftwall)  scene.object_colors.push_back(make_color("leftwall",  0.6f, 0.6f, 0.6f, 0.4f));
   if (use_rightwall) scene.object_colors.push_back(make_color("rightwall", 0.6f, 0.6f, 0.6f, 0.4f));
   if (use_backwall)  scene.object_colors.push_back(make_color("backwall",  0.6f, 0.6f, 0.6f, 0.4f));
+  if (use_mountwall) scene.object_colors.push_back(make_color("mountwall", 0.6f, 0.6f, 0.6f, 0.4f));
 
   return scene;
 }

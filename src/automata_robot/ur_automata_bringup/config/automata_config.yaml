@@ -4,19 +4,25 @@ robot:
   # Posa della base nel frame `world` (giunto fisso world -> base_link della URDF).
   # La legge direttamente lo xacro, quindi driver e MoveIt generano la stessa
   # URDF. Dopo una modifica: rebuild di ur_automata_bringup + riavvio bringup.
+  # Se diversa da zero la scena aggiunge una parete di montaggio dietro la base.
   # Esempio robot a muro, asse pan (Z base) rivolto verso la piattaforma, X invariato:
   #   base_xyz: [0.133, -0.25, 0.455]     base_rpy: [-1.5708, 0.0, 0.0]
-  base_xyz: [0.0, 0.0, 0.0]    # metri
-  base_rpy: [0.0, 0.0, 0.0]    # radianti: roll (X), pitch (Y), yaw (Z)
+  #   e planning.home_pose_name / lower_home_pose_name: home_wall
+  base_xyz: [0.133, -0.25, 0.455]   # metri
+  base_rpy: [-1.5708, 0.0, 0.0]    # radianti: roll (X), pitch (Y), yaw (Z)
 
 planning:
   group: ur_manipulator
   global_frame: world                  # frame in cui sono espressi gli ostacoli e il centro dello scan
   end_effector_link: ee_automata_tcp   # tip_link del kinematic chain (deve coincidere col SRDF)
   trajectory_scaling_factor: 0.4       # default conservativo per i primi test
-  home_pose_name: home                 # group_state SRDF: pose iniziale e recovery per upper hemisphere
-  lower_home_pose_name: lower_scan_ready  # group_state SRDF: usato in scan lower-only e nel ramo lower di full
-                                          # (DEVE esistere in ur_automata_moveit_config/config/ur_automata.srdf)
+  # group_state SRDF (ur_automata_moveit_config/config/ur_automata.srdf): pose iniziale,
+  # recovery dell'emisfero superiore (home_pose_name) e di quello inferiore
+  # (lower_home_pose_name). Sono in giunti, quindi dipendono da robot.base_rpy:
+  #   base in origine -> home / lower_scan_ready
+  #   base a muro     -> home_wall / home_wall (le altre finiscono nella piattaforma)
+  home_pose_name: home_wall
+  lower_home_pose_name: home_wall
   use_moveit: true                     # use moveit
   use_scene: true                      # spawn scene with MoveIt, scene defined in ur_automata_scene pkg
   use_rviz: true                       # launch RViz alongside MoveIt

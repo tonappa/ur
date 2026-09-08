@@ -28,6 +28,9 @@ def generate_launch_description():
     platform_margin = float(cfg["scan"].get("platform_margin", 0.0))
     table_margin = float(cfg["scan"].get("table_margin", 0.0))
     walls = cfg["scan"].get("walls", {}) or {}
+    robot = cfg.get("robot", {}) or {}
+    base_xyz = [float(v) for v in robot.get("base_xyz", [0.0, 0.0, 0.0])]
+    base_rpy = [float(v) for v in robot.get("base_rpy", [0.0, 0.0, 0.0])]
 
     scene_node = Node(
         package="ur_automata_scene",
@@ -43,6 +46,8 @@ def generate_launch_description():
             "wall_back_y": float(walls.get("back_y", 0.0)),
             "wall_left_x": float(walls.get("left_x", 0.0)),
             "wall_right_x": float(walls.get("right_x", 0.0)),
+            "base_xyz": base_xyz,
+            "base_rpy": base_rpy,
         }],
     )
 

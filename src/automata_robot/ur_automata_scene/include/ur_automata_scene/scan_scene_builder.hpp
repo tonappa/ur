@@ -28,6 +28,13 @@ struct SceneOptions {
   double wall_back_y = 0.0;
   double wall_left_x = 0.0;
   double wall_right_x = 0.0;
+
+  // Posa della base del robot nel frame globale (metri, radianti), la stessa
+  // di robot.base_xyz / base_rpy nel YAML. Se diversa da zero, dietro la base
+  // viene messa una parete di montaggio perpendicolare all'asse Z della base:
+  // il robot e' fissato a un muro, non al tavolo.
+  Eigen::Vector3d base_xyz = Eigen::Vector3d::Zero();
+  Eigen::Vector3d base_rpy = Eigen::Vector3d::Zero();
 };
 
 // Build the planning scene with: table, platform, target sphere and artefact,

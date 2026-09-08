@@ -37,6 +37,9 @@ public:
     declare_parameter<double>("wall_back_y", 0.0);
     declare_parameter<double>("wall_left_x", 0.0);
     declare_parameter<double>("wall_right_x", 0.0);
+    // Posa della base (robot.base_xyz / base_rpy): se non e' zero, parete di montaggio.
+    declare_parameter<std::vector<double>>("base_xyz", std::vector<double>{0.0, 0.0, 0.0});
+    declare_parameter<std::vector<double>>("base_rpy", std::vector<double>{0.0, 0.0, 0.0});
 
     // Create the service client we will call later
     client_ = create_client<moveit_msgs::srv::ApplyPlanningScene>("/apply_planning_scene");
@@ -64,6 +67,14 @@ public:
     opt.wall_back_y     = get_parameter("wall_back_y").as_double();
     opt.wall_left_x     = get_parameter("wall_left_x").as_double();
     opt.wall_right_x    = get_parameter("wall_right_x").as_double();
+    std::vector<double> base_xyz = get_parameter("base_xyz").as_double_array();
+    std::vector<double> base_rpy = get_parameter("base_rpy").as_double_array();
+    if (base_xyz.size() != 3 || base_rpy.size() != 3) {
+      RCLCPP_FATAL(get_logger(), "base_xyz and base_rpy must contain 3 values each");
+      return false;
+    }
+    opt.base_xyz = Eigen::Vector3d(base_xyz[0], base_xyz[1], base_xyz[2]);
+    opt.base_rpy = Eigen::Vector3d(base_rpy[0], base_rpy[1], base_rpy[2]);
 
     // ---------------- Wait for the MoveIt service ----------------
     RCLCPP_INFO(get_logger(), "Waiting for /apply_planning_scene service ...");
@@ -89,10 +100,14 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "Applying scene: %zu objects in frame '%s', center [%.3f, %.3f, %.3f], "
-      "margins platform %.3f / table %.3f m, walls back %.2f left %.2f right %.2f",
+      "margins platform %.3f / table %.3f m, walls back %.2f left %.2f right %.2f, "
+      "base [%.3f, %.3f, %.3f] rpy [%.3f, %.3f, %.3f]%s",
       scene.world.collision_objects.size(), global_frame.c_str(),
       center.x(), center.y(), center.z(), opt.platform_margin, opt.table_margin,
-      opt.wall_back_y, opt.wall_left_x, opt.wall_right_x);
+      opt.wall_back_y, opt.wall_left_x, opt.wall_right_x,
+      opt.base_xyz.x(), opt.base_xyz.y(), opt.base_xyz.z(),
+      opt.base_rpy.x(), opt.base_rpy.y(), opt.base_rpy.z(),
+      (opt.base_xyz.isZero() && opt.base_rpy.isZero()) ? "" : " (parete di montaggio)");
 
     // ---------------- Call the service and wait for the response ----------------
     auto future = client_->async_send_request(request);
