@@ -15,9 +15,16 @@ planning:
   use_rviz: true                       # launch RViz alongside MoveIt
 
 scan:
-  #center: [0.133, 0.40, 0.504]  # posizione originale (dp4): punto estremo a 0.955 m, fuori portata
-  #center: [0.133, 0.35, 0.504]  # dp5: 0.927 m, ancora fuori di 9 mm
-  center: [0.133, 0.35, 0.470]   # centro del supporto (faccia superiore del disco), in metri, nel
+  # Storia della posizione (URSim, r 0.30, full 4x15), vedi Plan/implementation_plan.md §9:
+  #   [0.133, 0.40, 0.504]  punto estremo a 0.955 m, fuori portata
+  #   [0.133, 0.35, 0.504]  0.927 m, fuori di 9 mm
+  #   [0.133, 0.35, 0.470]  82/82, 140 s, 2290 candidati (anello basso lato base 124)
+  #   [0.0,   0.374, 0.470] centrato sull'asse: 82/82 ma 181 s, il pan gira il doppio
+  #   [0.133, 0.365, 0.470] 82/82, 132 s, 1977 candidati: l'anello basso guadagna, gli altri perdono
+  #   [0.133, 0.375, 0.455] 82/82, 139 s, 2457 candidati (anello basso 202): stessa distanza dalla
+  #                         base ma sfera piu' orizzontale e bassa -> scelta. wp 46/47 restano a 1-2
+  #                         candidati per autocollisione EE<->avambraccio, nessuna posizione li sposta.
+  center: [0.133, 0.375, 0.455]  # centro del supporto (faccia superiore del disco), in metri, nel
                                  # frame `planning.global_frame`. Il punto piu' lontano della sfera
                                  # dista |center| + radius dalla base: tenerlo sotto ~0.91 m.
                                  # La mesh della piattaforma nella scena segue questo valore.

@@ -362,3 +362,36 @@ numeri di dp10 nel messaggio. Aggiornare il commento in testa a
   risulta irraggiungibile per autocollisione EE↔avambraccio; senza margine
   tornano tutti. È il limite geometrico della cella, vedi il piano dei
   centri alternativi nel prossimo passo.
+
+## 9. Posizione della piattaforma (2026-09-08, URSim, r 0.30, full 4x15, margine e muri 0)
+
+Il vincolo: base in origine, sfera di diametro 0.60 m dentro una banda
+radiale utile di ~0.33-0.92 m (lato vicino: autocollisione EE-avambraccio
+con il polso accanto alla base; lato lontano: portata). Conta la distanza
+*orizzontale* dei punti bassi dall'asse della base, non la distanza del
+centro. Prova = fase 2 (enumerazione + DP) con centro diverso, poi scan
+intero sui candidati buoni.
+
+| centro | note | raggiunti | tempo | candidati | anello basso lato base (wp 42-56) |
+|---|---|---|---|---|---|
+| (0.133, 0.35, 0.470) dp11 | riferimento | 82/82 | 140 s | 2290 | 124 |
+| (0.0, 0.374, 0.470) A | centrato sull'asse, stessa distanza | 82/82 | 181 s | 2440 | 138 |
+| (0.133, 0.365, 0.470) B | +1.5 cm y | 82/82 | 132 s | 1977 | 151 |
+| **(0.133, 0.375, 0.455) C** | +2.5 cm y, -1.5 cm z | 82/82 | 139 s | **2457** | **202** |
+
+- A: il lato vicino non cambia (stessa distanza dal centro) e la sfera a
+  cavallo dell'asse pan raddoppia il costo in giunti (3137 -> 6152).
+- B: gioco a somma negativa, l'anello basso guadagna il 22% e tutti gli
+  altri anelli perdono il 10-20% (lato lontano wp 15: 38 -> 15).
+- C: |c| quasi uguale a dp11 (0.604 contro 0.601 m) ma sfera piu'
+  orizzontale e bassa: i punti bassi sono 2.5 cm piu' lontani dall'asse
+  della base, quelli lontani piu' vicini all'altezza della spalla. Anello
+  basso +63%, anello 2 +44%, lato lontano quasi intatto. Costo: 1.5 cm in
+  meno sotto il disco, il triplo di tratti bloccati nella DP (19 s invece
+  di 4.5, irrilevante). **Adottata come default.**
+- wp 46 e 47 (1-2 candidati) non si muovono con nessuna posizione: leve
+  strutturali soltanto (`equator_exclusion_lower_deg` 20 -> 25, raggio
+  0.28 se la camera lo permette, forma dell'EE). Con `platform_margin`
+  0.01 uno di questi cade a ogni run.
+- Non provato: (0.133, 0.385, 0.440), per trovare dove la tavola comincia
+  a mangiare l'emisfero inferiore.
