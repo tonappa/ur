@@ -25,6 +25,7 @@ def generate_launch_description():
     global_frame = cfg["planning"]["global_frame"]
     scan_center = [float(v) for v in cfg["scan"]["center"]]
     platform_sim = bool(cfg["scan"].get("platform_sim", True))
+    platform_mesh = str(cfg["scan"].get("platform_mesh", "disk.stl"))
     platform_margin = float(cfg["scan"].get("platform_margin", 0.0))
     table_margin = float(cfg["scan"].get("table_margin", 0.0))
     walls = cfg["scan"].get("walls", {}) or {}
@@ -41,6 +42,7 @@ def generate_launch_description():
             "global_frame": global_frame,
             "scan_center": scan_center,
             "platform_sim": platform_sim,
+            "platform_mesh": platform_mesh,
             "platform_margin": platform_margin,
             "table_margin": table_margin,
             "wall_back_y": float(walls.get("back_y", 0.0)),

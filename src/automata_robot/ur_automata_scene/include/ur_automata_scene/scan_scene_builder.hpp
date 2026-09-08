@@ -12,8 +12,11 @@ namespace ur_automata_scene {
 // Opzioni della scena, lette da automata_config.yaml (sezione `scan`).
 struct SceneOptions {
   // true  -> piattaforma ricostruita con disco + 3 gambe cilindriche (modo classico)
-  // false -> mesh STL `meshes/disk.stl` (geometria reale)
+  // false -> mesh STL `meshes/<platform_mesh>` (geometria reale)
   bool platform_sim = true;
+  // File STL in meshes/ (mm, stesso riferimento di disk.stl: disco vicino al
+  // robot centrato in x 200, faccia superiore a y 504). Usato con platform_sim false.
+  std::string platform_mesh = "disk.stl";
 
   // Keep-out di margine, in metri (0 = nessun oggetto):
   //   platform_margin -> cilindro attorno al disco (raggio +m, spessore +2m)

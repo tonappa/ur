@@ -28,6 +28,8 @@ public:
 
     // Parameter: true = disco + 3 gambe (simulato), false = mesh STL della piattaforma reale
     declare_parameter<bool>("platform_sim", true);
+    // Parameter: STL file name in meshes/, used when platform_sim is false
+    declare_parameter<std::string>("platform_mesh", "disk.stl");
 
     // Parameters: keep-out di margine in metri (0 = nessun oggetto)
     declare_parameter<double>("platform_margin", 0.0);
@@ -62,6 +64,7 @@ public:
     Eigen::Vector3d center(center_vec[0], center_vec[1], center_vec[2]);
     ur_automata_scene::SceneOptions opt;
     opt.platform_sim    = get_parameter("platform_sim").as_bool();
+    opt.platform_mesh   = get_parameter("platform_mesh").as_string();
     opt.platform_margin = get_parameter("platform_margin").as_double();
     opt.table_margin    = get_parameter("table_margin").as_double();
     opt.wall_back_y     = get_parameter("wall_back_y").as_double();

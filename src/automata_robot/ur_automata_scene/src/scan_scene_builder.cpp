@@ -271,7 +271,7 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
     // Mesh STL della piattaforma reale, posizionata in modo che la faccia
     // superiore del disco coincida con `center` (vedi platform_pose sotto).
     std::string platform_mesh_path =
-        "file://" + package_path + "/meshes/disk.stl";
+        "file://" + package_path + "/meshes/" + opt.platform_mesh;
 
     platform.header.frame_id = global_frame;
     platform.header.stamp = stamp;

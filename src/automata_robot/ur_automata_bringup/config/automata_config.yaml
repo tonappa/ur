@@ -47,7 +47,13 @@ scan:
                                  # frame `planning.global_frame`. Il punto piu' lontano della sfera
                                  # dista |center| + radius dalla base: tenerlo sotto ~0.91 m.
                                  # La mesh della piattaforma nella scena segue questo valore.
-  platform_sim: false   # true: scena con disco+3 gambe simulati | false: usa il mesh STL meshes/disk.stl
+  platform_sim: false   # true: scena con disco+3 gambe simulati | false: usa il mesh STL `platform_mesh`
+  # File STL in ur_automata_scene/meshes (mm, stesso riferimento di disk.stl), usato con platform_sim false:
+  #   disk.stl        solo il disco Ø300x4 vicino al robot
+  #   platform01.stl  piattaforma completa: due dischi a ±0.20 m dall'asse, mozzo, stelo, basamento
+  #                   con motore dalla parte opposta al robot; 28k triangoli. Il basamento finisce
+  #                   4.9 cm sotto il tavolo perche' la piattaforma e' alta 0.504 m e center.z e' 0.455.
+  platform_mesh: platform01.stl
   # Keep-out di margine (metri, 0 = disattivo), gialli in RViz:
   #   platform_margin -> cilindro attorno al disco (raggio +m, spessore +2m);
   #                      protegge anche dal "buco" nel disco da 4 mm fra due check
