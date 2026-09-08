@@ -18,6 +18,8 @@
 #include <future>
 #include <limits>
 #include <map>
+#include <memory>
+#include <set>
 #include <mutex>
 #include <tuple>
 #include <string>
@@ -38,6 +40,9 @@
 #include <moveit/robot_state/robot_state.h>
 #include <moveit/robot_model/joint_model_group.h>
 #include <moveit/planning_scene/planning_scene.h>
+#include <geometric_shapes/shapes.h>
+#include <geometric_shapes/bodies.h>
+#include <geometric_shapes/body_operations.h>
 #include <moveit_msgs/srv/get_planning_scene.hpp>
 #include <moveit_msgs/msg/planning_scene_components.hpp>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
@@ -62,6 +67,7 @@ const Color COLOR_YELLOW = {1.0f, 0.85f, 0.0f}; // currently being planned/execu
 const Color COLOR_GREEN  = {0.0f, 1.0f, 0.0f};  // reached successfully
 const Color COLOR_RED    = {1.0f, 0.0f, 0.0f};  // failed
 const Color COLOR_BLUE   = {0.0f, 0.4f, 1.0f};  // fallback waypoint
+const Color COLOR_ORANGE = {1.0f, 0.5f, 0.0f};  // view blocked by a scene object
 
 // ============================================================================
 // ANSI escape codes for the in-place table
@@ -154,6 +160,7 @@ enum class WpStatus {
   HOMING,
   FAIL,
   UNREACHABLE,     // nessuna configurazione valida trovata in fase di enumerazione
+  OCCLUDED,        // un oggetto della scena sta fra la camera e il centro: scartato
   FALLBACK_ORIGIN  // original wp unreachable; a nearby fallback was executed instead
 };
 
@@ -197,6 +204,7 @@ static const char * status_label(WpStatus s)
     case WpStatus::HOMING:          return "HOMING";
     case WpStatus::FAIL:            return "FAIL";
     case WpStatus::UNREACHABLE:     return "UNREACHABLE";
+    case WpStatus::OCCLUDED:        return "OCCLUDED";
     case WpStatus::FALLBACK_ORIGIN: return "FALLBACK";
   }
   return "?";
@@ -211,6 +219,7 @@ static const char * status_color(WpStatus s)
     case WpStatus::HOMING:          return ansi::YELLOW;
     case WpStatus::FAIL:            return ansi::RED;
     case WpStatus::UNREACHABLE:     return ansi::RED;
+    case WpStatus::OCCLUDED:        return "\033[35m";  // magenta
     case WpStatus::FALLBACK_ORIGIN: return "\033[34m";  // blue
   }
   return ansi::RESET;
@@ -261,6 +270,107 @@ static double joint_distance(
 // off-axis (checking origins only let the forearm sit in front of the camera).
 // Only points between the TCP and the center count (not behind the camera);
 // points closer than 1 cm to the TCP belong to the wrist and are skipped.
+// ----------------------------------------------------------------------------
+// Linea di vista camera -> centro contro gli oggetti della scena.
+// Segmento dal waypoint al centro: se attraversa un oggetto del mondo la foto
+// da quel punto inquadra l'ostacolo (es. lo stelo della piattaforma), quindi
+// il waypoint va scartato prima ancora di cercare le IK.
+// Ignorati: il marker del centro, l'oggetto da scansionare, i keep-out di
+// margine e le intersezioni entro 3 cm dal centro (il disco sotto l'oggetto:
+// i raggi dell'emisfero inferiore lo attraversano a 4 mm dal centro).
+// ponytail: un solo raggio lungo l'asse ottico; campionare un cono di raggi
+// se conta l'apertura della camera.
+// ----------------------------------------------------------------------------
+
+// Moller-Trumbore: intersezione raggio (origin, dir unitario) / triangolo.
+// Ritorna true e la distanza t lungo il raggio se il raggio colpisce il triangolo.
+static bool ray_hits_triangle(
+  const Eigen::Vector3d & origin, const Eigen::Vector3d & dir,
+  const Eigen::Vector3d & v0, const Eigen::Vector3d & v1, const Eigen::Vector3d & v2,
+  double & t_out)
+{
+  const double eps = 1e-9;
+  Eigen::Vector3d e1 = v1 - v0;
+  Eigen::Vector3d e2 = v2 - v0;
+  Eigen::Vector3d p = dir.cross(e2);
+  double det = e1.dot(p);
+  if (std::abs(det) < eps) return false;   // raggio parallelo al triangolo
+  double inv_det = 1.0 / det;
+  Eigen::Vector3d s = origin - v0;
+  double u = inv_det * s.dot(p);
+  if (u < 0.0 || u > 1.0) return false;
+  Eigen::Vector3d q = s.cross(e1);
+  double v = inv_det * dir.dot(q);
+  if (v < 0.0 || u + v > 1.0) return false;
+  t_out = inv_det * e2.dot(q);
+  return t_out > eps;
+}
+
+static bool is_scene_occluding(
+  const planning_scene::PlanningScene & scene,
+  const Eigen::Vector3d & from,
+  const Eigen::Vector3d & center,
+  std::string & hit_object)
+{
+  static const std::set<std::string> ignored_objects = {
+    "support_center", "artefact", "platform_margin", "table_margin"};
+  const double ignore_near_center = 0.03;   // m
+
+  const Eigen::Vector3d seg = center - from;
+  const double seg_len = seg.norm();
+  if (seg_len < 1e-6) return false;
+  const Eigen::Vector3d dir = seg / seg_len;
+  // Conta solo le intersezioni sul segmento e non a ridosso del centro.
+  auto hit_counts = [&](double t) { return t > 0.0 && t < seg_len - ignore_near_center; };
+
+  collision_detection::WorldConstPtr world = scene.getWorld();
+  for (const std::string & id : world->getObjectIds()) {
+    if (ignored_objects.count(id) > 0) continue;
+    collision_detection::World::ObjectConstPtr obj = world->getObject(id);
+    if (!obj) continue;
+    for (size_t k = 0; k < obj->shapes_.size(); ++k) {
+      const shapes::Shape * shape = obj->shapes_[k].get();
+      const Eigen::Isometry3d & pose = obj->global_shape_poses_[k];
+
+      if (shape->type == shapes::MESH) {
+        // Raggio portato nel frame della mesh: una trasformazione sola invece
+        // di una per vertice.
+        const auto * mesh = static_cast<const shapes::Mesh *>(shape);
+        Eigen::Isometry3d inv = pose.inverse();
+        Eigen::Vector3d o = inv * from;
+        Eigen::Vector3d d = inv.linear() * dir;
+        auto vertex = [&](unsigned int idx) {
+          const double * v = mesh->vertices + 3 * idx;
+          return Eigen::Vector3d(v[0], v[1], v[2]);
+        };
+        for (unsigned int tri = 0; tri < mesh->triangle_count; ++tri) {
+          const unsigned int * idx = mesh->triangles + 3 * tri;
+          double t = 0.0;
+          if (ray_hits_triangle(o, d, vertex(idx[0]), vertex(idx[1]), vertex(idx[2]), t) &&
+              hit_counts(t)) {
+            hit_object = id;
+            return true;
+          }
+        }
+      } else {
+        // Primitive (box, cilindro, sfera): geometric_shapes fa il raycast.
+        std::unique_ptr<bodies::Body> body(bodies::createBodyFromShape(shape));
+        if (!body) continue;
+        body->setPose(pose);
+        EigenSTL::vector_Vector3d points;
+        if (!body->intersectsRay(from, dir, &points)) continue;
+        for (const Eigen::Vector3d & p : points) {
+          if (hit_counts((p - from).dot(dir))) {
+            hit_object = id;
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 static bool is_arm_occluding(
   const moveit::core::RobotState & state,
   const moveit::core::JointModelGroup * jmg,
@@ -1130,6 +1240,7 @@ int main(int argc, char ** argv)
   // Ritorna true se il candidato e' accettabile.
   int collision_rejects = 0;
   int occlusion_rejects = 0;
+  int scene_occluded    = 0;   // waypoint scartati: oggetto della scena fra camera e centro
   const auto * jmg = move_group.getRobotModel()->getJointModelGroup(planning_group);
   auto candidate_ok = [&](const moveit::core::RobotState & st, size_t wp_index) -> bool {
     if (scene && scene->isStateColliding(st, planning_group)) {
@@ -1218,6 +1329,24 @@ int main(int argc, char ** argv)
     // una per ramo); quelle dalla home solo finche' non c'e' un precedente.
     const std::vector<std::vector<double>> & seeds = prev_seeds.empty() ? home_seeds : prev_seeds;
 
+    // Linea di vista: se fra il waypoint e il centro c'e' un oggetto della
+    // scena la foto inquadrerebbe l'ostacolo. Scartato subito, senza IK ne'
+    // fallback.
+    if (scene) {
+      Eigen::Vector3d wp_pos(waypoints[i].position.x, waypoints[i].position.y, waypoints[i].position.z);
+      std::string hit_object;
+      if (is_scene_occluding(*scene, wp_pos, cfg.center, hit_object)) {
+        ++scene_occluded;
+        rows[i].status = WpStatus::OCCLUDED;
+        set_marker_color(markers_array, i, COLOR_ORANGE);
+        double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - enum_t0).count();
+        std::printf("  wp %3zu/%zu: vista coperta da '%s'  <-- SCARTATO   (%.1f s)\n",
+                    i + 1, waypoints.size(), hit_object.c_str(), elapsed);
+        std::fflush(stdout);
+        continue;
+      }
+    }
+
     enumerate_pose(waypoints[i], i, false, seeds, enum_pitch_offsets, layers[i], enum_ik_timeout);
 
     // Vicino al limite dell'inviluppo (braccio quasi disteso) il solver
@@ -1247,6 +1376,8 @@ int main(int argc, char ** argv)
           Eigen::Vector3d new_radial =
             (std::cos(angle_off) * radial + std::sin(angle_off) * tangent).normalized();
           Eigen::Vector3d cand_pos = cfg.center + cfg.radius * new_radial;
+          std::string hit_object;
+          if (scene && is_scene_occluding(*scene, cand_pos, cfg.center, hit_object)) continue;
           enumerate_pose(make_lookat(cand_pos, cfg.center), i, true, seeds, fb_pitch_offsets, layers[i], slow_ik_timeout);
         }
       }
@@ -1424,8 +1555,10 @@ int main(int argc, char ** argv)
   size_t reachable = 0, via_fallback = 0;
   for (size_t i = 0; i < waypoints.size(); ++i) {
     if (seq.chosen[i] < 0) {
-      rows[i].status = WpStatus::UNREACHABLE;
-      set_marker_color(markers_array, i, COLOR_RED);
+      if (rows[i].status != WpStatus::OCCLUDED) {   // gia' marcato in fase 1
+        rows[i].status = WpStatus::UNREACHABLE;
+        set_marker_color(markers_array, i, COLOR_RED);
+      }
       continue;
     }
     ++reachable;
@@ -1450,10 +1583,10 @@ int main(int argc, char ** argv)
   {
     char buf[384];
     std::snprintf(buf, sizeof(buf),
-      "Sequenza: %zu/%zu raggiungibili (%zu via fallback), %zu irraggiungibili | "
+      "Sequenza: %zu/%zu raggiungibili (%zu via fallback), %zu irraggiungibili, %d vista coperta | "
       "%zu candidati, %d scartati per collisione, %d per occlusione | costo DP %.1f, %zu tratti bloccati su %zu controllati, %d iter | "
       "enumerazione %.1f s, DP %.1f s",
-      reachable, waypoints.size(), via_fallback, waypoints.size() - reachable,
+      reachable, waypoints.size(), via_fallback, waypoints.size() - reachable - scene_occluded, scene_occluded,
       total_candidates, collision_rejects, occlusion_rejects, seq.total_cost, blocked_edges_total, edge_cache.size(),
       dp_iterations, enum_seconds, dp_seconds);
     g_sequence_summary = buf;
@@ -1488,9 +1621,11 @@ int main(int argc, char ** argv)
       recovery_pose_name = lower_home_pose_name;
     }
 
-    if (seq.chosen[i] < 0) {   // gia' marcato UNREACHABLE in fase 2
-      ++failures;
-      ++ik_failures;
+    if (seq.chosen[i] < 0) {   // gia' marcato OCCLUDED (fase 1) o UNREACHABLE (fase 2)
+      if (rows[i].status != WpStatus::OCCLUDED) {
+        ++failures;
+        ++ik_failures;
+      }
       continue;
     }
     const Candidate & chosen = layers[i][seq.chosen[i]];
@@ -1607,6 +1742,9 @@ int main(int argc, char ** argv)
     ik_failures, plan_failures, exec_failures);
   if (fallback_total > 0) {
     std::printf("  Fallback: %d punti alternativi.", fallback_total);
+  }
+  if (scene_occluded > 0) {
+    std::printf("  Vista coperta: %d waypoint scartati.", scene_occluded);
   }
   std::printf("\n%sPlanner usati:%s", ansi::BOLD, ansi::RESET);
   if (g_planner_hits.empty()) {

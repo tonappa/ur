@@ -15,6 +15,7 @@ find_package(moveit_msgs REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(geometric_shapes REQUIRED)
 
 # ── Libreria geometrica pura (no ROS, solo Eigen + geometry_msgs) ─────────────
 add_library(sphere_waypoint_generator
@@ -72,6 +73,7 @@ ament_target_dependencies(scan_sequence_node
   moveit_msgs
   Eigen3
   std_srvs
+  geometric_shapes
 )
 
 # ── Install ───────────────────────────────────────────────────────────────────
