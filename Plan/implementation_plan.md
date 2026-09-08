@@ -395,3 +395,20 @@ intero sui candidati buoni.
   0.01 uno di questi cade a ogni run.
 - Non provato: (0.133, 0.385, 0.440), per trovare dove la tavola comincia
   a mangiare l'emisfero inferiore.
+
+## 10. Montaggio a muro (2026-09-08, URSim, centro C, planners ptp+ompl)
+
+Robot fissato a una parete dietro la piattaforma, alla sua quota, con l'asse
+del pan rivolto verso la sfera: base (0.133, -0.25, 0.455), rpy (-90°, 0, 0),
+home `home_wall` (braccio su lungo la parete, avambraccio sopra la
+piattaforma). Risultato: **63/82, 276 s**, 19 waypoint persi in
+pianificazione, tutti nell'emisfero inferiore (41-45, 51-64); superiore
+41/41. Candidati 3580 (più che sul tavolo) ma 84% dei tratti bloccati:
+le rette PTP attraversano il disco con braccio e avambraccio, OMPL non
+trova il passaggio sotto il disco in 5 s. La parete di montaggio non era
+nella scena in quel run (package non ricompilato): con la parete andrebbe
+solo peggio. Il vantaggio ipotizzato (pan = giradischi) richiederebbe
+anelli attorno all'asse del pan nel generatore: non costruito, vista la
+perdita sull'inferiore. Resta l'infrastruttura: `robot.base_xyz/base_rpy`
+nel YAML, parete di montaggio automatica, `home_wall` nel SRDF. Idea non
+provata: base inclinata (roll -30°) su piedistallo.
