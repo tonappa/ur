@@ -116,6 +116,9 @@ leggono. Tre sezioni:
 robot:
   ip: 192.168.56.101      # controller UR (URSim o reale)
   type: ur5               # ur3, ur3e, ur5, ur5e, ur10, ur10e, ur16e
+  base_xyz: [0.0, 0.0, 0.0]   # posa della base nel frame world (m, rad), letta dallo xacro:
+  base_rpy: [0.0, 0.0, 0.0]   # driver e MoveIt restano coerenti. Es. robot a muro con il pan
+                              # verso la piattaforma: xyz [0.133, -0.25, 0.455], rpy [-1.5708, 0, 0]
 
 planning:
   group: ur_manipulator

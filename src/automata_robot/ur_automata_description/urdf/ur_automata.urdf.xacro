@@ -44,6 +44,14 @@
   <xacro:arg name="initial_positions_file" default="$(find ur_automata_moveit_config)/config/initial_positions.yaml"/>
   <xacro:property name="initial_positions_file_prop" value="$(arg initial_positions_file)"/>
 
+  <!-- Posa della base nel mondo, letta da automata_config.yaml (robot.base_xyz /
+       base_rpy): driver e MoveIt generano la stessa URDF senza argomenti extra ai
+       launch. Chiavi assenti = base in origine. -->
+  <xacro:property name="automata_config_file" value="$(find ur_automata_bringup)/config/automata_config.yaml"/>
+  <xacro:property name="automata_config" value="${xacro.load_yaml(automata_config_file)}"/>
+  <xacro:property name="base_xyz" value="${automata_config['robot'].get('base_xyz', [0, 0, 0])}"/>
+  <xacro:property name="base_rpy" value="${automata_config['robot'].get('base_rpy', [0, 0, 0])}"/>
+
   <link name="world" />
 
   <xacro:ur_robot
@@ -58,7 +66,7 @@
     safety_pos_margin="$(arg safety_pos_margin)"
     safety_k_position="$(arg safety_k_position)"
     >
-     <origin xyz="0 0 0" rpy="0 0 0" />
+     <origin xyz="${base_xyz[0]} ${base_xyz[1]} ${base_xyz[2]}" rpy="${base_rpy[0]} ${base_rpy[1]} ${base_rpy[2]}" />
   </xacro:ur_robot>
 
   <xacro:ur_ros2_control

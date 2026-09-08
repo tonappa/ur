@@ -1,6 +1,13 @@
 robot:
   ip: 192.168.56.101         # UR 192.168.1.97 (o URSim) IP address URSIM 192.168.56.101
   type: ur5                 # ur3, ur3e, ur5, ur5e, ur10, ur10e, ur16e
+  # Posa della base nel frame `world` (giunto fisso world -> base_link della URDF).
+  # La legge direttamente lo xacro, quindi driver e MoveIt generano la stessa
+  # URDF. Dopo una modifica: rebuild di ur_automata_bringup + riavvio bringup.
+  # Esempio robot a muro, asse pan (Z base) rivolto verso la piattaforma, X invariato:
+  #   base_xyz: [0.133, -0.25, 0.455]     base_rpy: [-1.5708, 0.0, 0.0]
+  base_xyz: [0.0, 0.0, 0.0]    # metri
+  base_rpy: [0.0, 0.0, 0.0]    # radianti: roll (X), pitch (Y), yaw (Z)
 
 planning:
   group: ur_manipulator
