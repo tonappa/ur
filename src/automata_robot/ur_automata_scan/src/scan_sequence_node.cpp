@@ -15,6 +15,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <filesystem>
 #include <future>
 #include <limits>
 #include <map>
@@ -53,6 +55,8 @@
 
 #include "ur_automata_scan/sphere_waypoint_generator.hpp"
 #include "ur_automata_scan/scan_sequence_planner.hpp"
+#include "ur_automata_scan/planning_scene_client.hpp"
+#include "ur_automata_scan/scan_recording.hpp"
 
 using visualization_msgs::msg::Marker;
 using visualization_msgs::msg::MarkerArray;
@@ -789,55 +793,6 @@ static std::vector<std::vector<double>> trajectory_path(
 
 
 // ============================================================================
-// Planning scene locale (Step 1)
-// ============================================================================
-// Copia locale della planning scene di move_group (oggetti del mondo + matrice
-// delle collisioni permesse). Serve per scartare le soluzioni IK in collisione
-// PRIMA di chiamare plan(): TRAC-IK non conosce la scena, e un goal in
-// collisione fa fallire OMPL solo dopo aver consumato tutto il planning_time.
-// La scena e' statica durante lo scan, quindi la leggiamo una volta sola.
-static planning_scene::PlanningScenePtr fetch_planning_scene(
-  rclcpp::Node::SharedPtr node,
-  const moveit::core::RobotModelConstPtr & robot_model,
-  const rclcpp::Logger & logger)
-{
-  using GetScene   = moveit_msgs::srv::GetPlanningScene;
-  using Components = moveit_msgs::msg::PlanningSceneComponents;
-
-  auto client = node->create_client<GetScene>("/get_planning_scene");
-  if (!client->wait_for_service(std::chrono::seconds(5))) {
-    RCLCPP_ERROR(logger,
-      "Service /get_planning_scene non disponibile: check collisioni lato client DISABILITATO.");
-    return nullptr;
-  }
-
-  auto request = std::make_shared<GetScene::Request>();
-  request->components.components =
-    Components::SCENE_SETTINGS |
-    Components::ROBOT_STATE |
-    Components::ROBOT_STATE_ATTACHED_OBJECTS |
-    Components::WORLD_OBJECT_NAMES |
-    Components::WORLD_OBJECT_GEOMETRY |
-    Components::TRANSFORMS |
-    Components::ALLOWED_COLLISION_MATRIX |
-    Components::LINK_PADDING_AND_SCALING;
-
-  // Il nodo e' gia' spinnato dal thread executor: basta aspettare il future.
-  auto future = client->async_send_request(request);
-  if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
-    RCLCPP_ERROR(logger,
-      "Timeout su /get_planning_scene: check collisioni lato client DISABILITATO.");
-    return nullptr;
-  }
-
-  auto scene = std::make_shared<planning_scene::PlanningScene>(robot_model);
-  scene->setPlanningSceneMsg(future.get()->scene);
-  RCLCPP_WARN(logger, "Planning scene locale caricata: %zu oggetti nel mondo.",
-              scene->getWorld()->size());
-  return scene;
-}
-
-// ============================================================================
 // Catena di planner (Step 2)
 // ============================================================================
 struct PlannerChoice {
@@ -856,6 +811,31 @@ struct PlannerSetup {
 // cui si confrontano i run: l'obiettivo e' avere quasi tutto su CIRC/PTP e OMPL
 // vicino a zero. Include anche le recovery e il ritorno a home.
 static std::map<std::string, int> g_planner_hits;
+
+// Calibration recording (record:=true): every executed motion, in order, and
+// how many of them were recoveries. Saved at the end of a complete scan.
+static std::vector<RecordedSegment> g_recorded;
+static int g_recoveries = 0;
+
+// Executed plan -> recorded motion (joint names and timed points as planned).
+static RecordedSegment to_recorded(const std::string & label, int waypoint,
+                                   const moveit::planning_interface::MoveGroupInterface::Plan & plan)
+{
+  RecordedSegment seg;
+  seg.label = label;
+  seg.waypoint = waypoint;
+  const auto & jt = plan.trajectory.joint_trajectory;
+  seg.joint_names = jt.joint_names;
+  for (const auto & pt : jt.points) {
+    RecordedPoint p;
+    p.time          = rclcpp::Duration(pt.time_from_start).seconds();
+    p.positions     = pt.positions;
+    p.velocities    = pt.velocities;
+    p.accelerations = pt.accelerations;
+    seg.points.push_back(p);
+  }
+  return seg;
+}
 
 // Traduce la stringa del YAML ("ompl", "pilz_ptp", "pilz_lin", "pilz_circ",
 // "stomp") in (pipeline, planner_id). Ritorna false se non e' riconosciuta.
@@ -1038,6 +1018,7 @@ static bool go_home(moveit::planning_interface::MoveGroupInterface & move_group,
     RCLCPP_ERROR(logger, "Recovery failed: could not execute move to '%s'.", home_pose_name.c_str());
     return false;
   }
+  g_recorded.push_back(to_recorded("posa " + home_pose_name, -1, home_plan));
 
   RCLCPP_INFO(logger, "Recovery done: now at '%s'.", home_pose_name.c_str());
   return true;
@@ -1052,6 +1033,7 @@ static bool recover_to_safe_pose(moveit::planning_interface::MoveGroupInterface 
                                  const std::string & home_pose_name,
                                  const rclcpp::Logger & logger)
 {
+  ++g_recoveries;
   if (go_home(move_group, planners, recovery_pose_name, logger)) return true;
   if (recovery_pose_name == home_pose_name) return false;
   RCLCPP_WARN(logger, "Recovery verso '%s' fallita, provo '%s'.",
@@ -1157,6 +1139,14 @@ int main(int argc, char ** argv)
   node->declare_parameter<double>     ("scan_enum_ik_timeout",         0.003);
   node->declare_parameter<double>     ("scan_planning_time",           5.0);
   node->declare_parameter<int>        ("scan_planning_attempts",       1);
+  // When no planner finds a path in scan_planning_time, try again with each of
+  // these planning times before going to the recovery pose. Empty = go to the
+  // recovery pose right away. Planning time only matters in the calibration
+  // run: the replay does not plan.
+  node->declare_parameter<std::vector<double>>("scan_retry_planning_times", std::vector<double>{});
+  // OMPL algorithm for those retries. RRTConnect grows a tree from both ends
+  // and finds narrow passages that RRTstar (one tree) misses for minutes.
+  node->declare_parameter<std::string>("scan_retry_ompl_algorithm", "RRTConnect");
   // Sectors per hemisphere (0 = classic ring-by-ring order). See order_by_sectors().
   node->declare_parameter<int>        ("scan_sectors",                 0);
   // Rotation of the sectors (deg, counterclockwise seen from above): 0 = sector 0
@@ -1168,6 +1158,10 @@ int main(int argc, char ** argv)
   node->declare_parameter<double>     ("scan_swing_threshold_m",       0.25);
   // true: stop after the sequence planning, print the forecast and do not move.
   node->declare_parameter<bool>       ("dry_run",                      false);
+  // true: save every executed motion to recording_file at the end of a
+  // complete scan (calibration run), for scan_replay_node.
+  node->declare_parameter<bool>       ("record",                       false);
+  node->declare_parameter<std::string>("recording_file",               "");
 
   const std::string global_frame    = node->get_parameter("global_frame").as_string();
   const std::string planning_group  = node->get_parameter("planning_group").as_string();
@@ -1201,11 +1195,16 @@ int main(int argc, char ** argv)
   const double      enum_ik_timeout = node->get_parameter("scan_enum_ik_timeout").as_double();
   const double      planning_time   = node->get_parameter("scan_planning_time").as_double();
   const int         planning_attempts = node->get_parameter("scan_planning_attempts").as_int();
+  const std::vector<double> retry_planning_times =
+    node->get_parameter("scan_retry_planning_times").as_double_array();
+  const std::string retry_ompl_algorithm = node->get_parameter("scan_retry_ompl_algorithm").as_string();
   const int         num_sectors       = node->get_parameter("scan_sectors").as_int();
   const double      sector_offset_deg = node->get_parameter("scan_sector_offset_deg").as_double();
   const double      joint_cost_weight = node->get_parameter("scan_joint_cost_weight").as_double();
   const double      swing_threshold   = node->get_parameter("scan_swing_threshold_m").as_double();
   const bool        dry_run           = node->get_parameter("dry_run").as_bool();
+  const bool        record            = node->get_parameter("record").as_bool();
+  const std::string recording_file    = node->get_parameter("recording_file").as_string();
 
   if (center_vec.size() != 3) {
     std::fprintf(stderr, "scan_center must have exactly 3 values (x, y, z).\n");
@@ -1311,6 +1310,11 @@ int main(int argc, char ** argv)
     return 1;
   }
   planners.circ_center = make_circ_center_constraint(global_frame, ee_link, cfg.center);
+  // Same chain for the retries, with the retry OMPL algorithm.
+  PlannerSetup retry_planners = planners;
+  for (PlannerChoice & choice : retry_planners.chain) {
+    if (choice.pipeline == "ompl") resolve_planner("ompl", retry_ompl_algorithm, choice);
+  }
 
   std::string planner_label;
   for (size_t k = 0; k < planners.chain.size(); ++k) {
@@ -1928,6 +1932,7 @@ int main(int argc, char ** argv)
   // True quando il robot e' fermo su un waypoint della sfera di scansione: solo
   // da li' Pilz CIRC puo' pianificare l'arco (start e goal allo stesso raggio).
   bool on_sphere = false;
+  bool scan_interrupted = false;   // stopped because even the recovery failed
 
   // Every executed motion, with the elbow / TCP path, for the swing report.
   std::vector<SegmentLog> segment_logs;
@@ -1965,6 +1970,17 @@ int main(int argc, char ** argv)
     std::string used_planner;
     bool plan_ok = plan_with_fallback(move_group, plan, planners, on_sphere, logger, &used_planner);
 
+    // No path found in time: OMPL is random, "not found in N s" is usually not
+    // "impossible". Try again with more time before going to the recovery pose.
+    for (double retry_time : retry_planning_times) {
+      if (plan_ok) break;
+      RCLCPP_WARN(logger, "wp %zu: nessun percorso in %.0f s, riprovo con %s per %.0f s.",
+                  i, move_group.getPlanningTime(), retry_ompl_algorithm.c_str(), retry_time);
+      move_group.setPlanningTime(retry_time);
+      plan_ok = plan_with_fallback(move_group, plan, retry_planners, on_sphere, logger, &used_planner);
+    }
+    move_group.setPlanningTime(planning_time);
+
     if (!plan_ok) {
       // Nessun percorso da dove siamo: passo dalla pose di recovery e riprovo
       // una volta verso la STESSA configurazione.
@@ -1980,6 +1996,7 @@ int main(int argc, char ** argv)
         rows[i].status = WpStatus::FAIL;
         ++failures; ++plan_failures;
         render_table(rows, lock_pitch, planner_label);
+        scan_interrupted = true;
         break;
       }
       on_sphere = false;   // dopo la recovery il TCP non e' piu' su un waypoint
@@ -2020,6 +2037,7 @@ int main(int argc, char ** argv)
         RCLCPP_ERROR(logger,
           "wp %zu: recovery impossibile dopo execute fallito. SCAN INTERROTTO: "
           "riportare il robot in una posa valida e rilanciare.", i);
+        scan_interrupted = true;
         break;
       }
       continue;
@@ -2035,6 +2053,20 @@ int main(int argc, char ** argv)
       seg.sweep   = sweep_of_path(trajectory_path(plan, work_state, jmg), work_state, jmg,
                                   elbow_link, ee_link);
       segment_logs.push_back(seg);
+
+      // Recording: the motion plus the camera pose at its end, computed with
+      // the robot model (the replay recomputes it to detect a changed model).
+      RecordedSegment rec_seg = to_recorded("wp " + std::to_string(i), static_cast<int>(i), plan);
+      if (!rec_seg.points.empty()) {
+        moveit::core::RobotState end_state(work_state);
+        end_state.setVariablePositions(rec_seg.joint_names, rec_seg.points.back().positions);
+        end_state.update();
+        const Eigen::Isometry3d camera = end_state.getGlobalLinkTransform(ee_link);
+        const Eigen::Quaterniond q(camera.linear());
+        rec_seg.camera_pose = {camera.translation().x(), camera.translation().y(), camera.translation().z(),
+                               q.x(), q.y(), q.z(), q.w()};
+      }
+      g_recorded.push_back(rec_seg);
     }
     rows[i].status = chosen.is_fallback ? WpStatus::FALLBACK_ORIGIN : WpStatus::DONE;
 
@@ -2106,6 +2138,46 @@ int main(int argc, char ** argv)
   }
   print_envelope();
   std::fflush(stdout);
+
+  // Calibration recording: only a complete scan is saved.
+  if (record) {
+    if (scan_interrupted || g_quit.load() || !rclcpp::ok()) {
+      std::printf("%sRegistrazione NON salvata:%s scan interrotto.\n", ansi::BOLD, ansi::RESET);
+    } else {
+      ScanRecording rec;
+      char created[32];
+      std::time_t now = std::time(nullptr);
+      std::strftime(created, sizeof(created), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+      rec.created           = created;
+      rec.planning_group    = planning_group;
+      rec.end_effector_link = ee_link;
+      rec.global_frame      = global_frame;
+      rec.center            = {cfg.center.x(), cfg.center.y(), cfg.center.z()};
+      rec.radius            = cfg.radius;
+      rec.waypoints_total   = static_cast<int>(waypoints.size());
+      rec.waypoints_reached = successes;
+      rec.recoveries        = g_recoveries;
+      rec.segments          = g_recorded;
+      std::string error;
+      std::error_code dir_error;
+      std::filesystem::path dir = std::filesystem::path(recording_file).parent_path();
+      if (!dir.empty()) std::filesystem::create_directories(dir, dir_error);
+      if (recording_file.empty()) {
+        std::printf("%sRegistrazione NON salvata:%s recording_file vuoto.\n", ansi::BOLD, ansi::RESET);
+      } else if (save_recording(recording_file, rec, error)) {
+        std::printf("%sRegistrazione salvata:%s %s (%zu movimenti, %d waypoint, %d recovery)\n",
+                    ansi::BOLD, ansi::RESET, recording_file.c_str(), rec.segments.size(),
+                    rec.waypoints_reached, rec.recoveries);
+        if (rec.recoveries > 0) {
+          std::printf("  Attenzione: il run contiene %d recovery, che verranno riprodotte. "
+                      "Conviene ripetere la taratura.\n", rec.recoveries);
+        }
+      } else {
+        std::printf("%sRegistrazione NON salvata:%s %s\n", ansi::BOLD, ansi::RESET, error.c_str());
+      }
+    }
+    std::fflush(stdout);
+  }
 
   // Cleanup
   g_quit = true;

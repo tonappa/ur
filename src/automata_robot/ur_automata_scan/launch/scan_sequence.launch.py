@@ -46,6 +46,13 @@ def generate_launch_description():
     # la trova: 10-50x piu' veloce. move_group resta con la sua kinematics.yaml.
     kinematics_yaml[p["group"]]["solve_type"] = "Speed"
 
+    # Optional list: not passed when missing or empty (ROS cannot guess the
+    # type of an empty list).
+    retry_param = {}
+    retry_times = [float(t) for t in (s.get("retry_planning_times") or [])]
+    if retry_times:
+        retry_param["scan_retry_planning_times"] = retry_times
+
     scan_node = Node(
         package="ur_automata_scan",
         executable="scan_sequence_node",
@@ -54,6 +61,7 @@ def generate_launch_description():
         parameters=[
             # I parametri del solver IK vanno sotto `robot_description_kinematics`.
             {"robot_description_kinematics": kinematics_yaml},
+            retry_param,
             {
             # Parametri di planning (da sezione `planning`)
             "global_frame":              p["global_frame"],
@@ -85,6 +93,7 @@ def generate_launch_description():
             "scan_fallback_max_plan_attempts": s["fallback_max_plan_attempts"],
             "scan_planners":               s["planners"],
             "scan_ompl_algorithm":         s["ompl_algorithm"],
+            "scan_retry_ompl_algorithm":   str(s.get("retry_ompl_algorithm", "RRTConnect")),
             "scan_pitch_search_range_deg": s["pitch_search_range_deg"],
             "scan_pitch_search_step_deg":  s["pitch_search_step_deg"],
             "scan_pitch_xparallel_bias":   s["pitch_xparallel_bias"],
@@ -98,6 +107,10 @@ def generate_launch_description():
             "scan_joint_cost_weight":      float(s.get("joint_cost_weight", 0.1)),
             "scan_swing_threshold_m":      float(s.get("swing_threshold_m", 0.25)),
             "dry_run": ParameterValue(LaunchConfiguration("dry_run"), value_type=bool),
+            # Calibration run: record:=true saves every executed motion to
+            # scan.recording_file at the end of a complete scan.
+            "record": ParameterValue(LaunchConfiguration("record"), value_type=bool),
+            "recording_file":              str(s.get("recording_file", "")),
             },
         ],
     )
@@ -106,5 +119,6 @@ def generate_launch_description():
         # dry_run:=true plans the sequence, prints the forecast and exits
         # without moving the robot.
         DeclareLaunchArgument("dry_run", default_value="false"),
+        DeclareLaunchArgument("record", default_value="false"),
         scan_node,
     ])

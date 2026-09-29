@@ -16,6 +16,7 @@ find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(geometric_shapes REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # ── Libreria geometrica pura (no ROS, solo Eigen + geometry_msgs) ─────────────
 add_library(sphere_waypoint_generator
@@ -55,6 +56,16 @@ target_include_directories(scan_sequence_planner PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+# ── Recorded scan file (calibration run -> replay), pure yaml-cpp ─────────────
+add_library(scan_recording
+  src/scan_recording.cpp
+)
+target_include_directories(scan_recording PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(scan_recording yaml-cpp::yaml-cpp)
+
 # ── Nodo esecutore v2 (enumerazione offline + DP + planner di riserva) ────────
 # scan_executor_node resta invariato come backup; questo e' l'evoluzione.
 add_executable(scan_sequence_node
@@ -63,6 +74,7 @@ add_executable(scan_sequence_node
 target_link_libraries(scan_sequence_node
   sphere_waypoint_generator
   scan_sequence_planner
+  scan_recording
 )
 ament_target_dependencies(scan_sequence_node
   rclcpp
@@ -76,13 +88,30 @@ ament_target_dependencies(scan_sequence_node
   geometric_shapes
 )
 
+# ── Replay of a recorded scan (work sessions, no planning) ────────────────────
+add_executable(scan_replay_node
+  src/scan_replay_node.cpp
+)
+target_link_libraries(scan_replay_node
+  scan_recording
+)
+ament_target_dependencies(scan_replay_node
+  rclcpp
+  moveit_ros_planning_interface
+  moveit_ros_planning
+  moveit_msgs
+  Eigen3
+  std_srvs
+)
+
 # ── Install ───────────────────────────────────────────────────────────────────
 install(
   DIRECTORY include/
   DESTINATION include
 )
 install(
-  TARGETS sphere_waypoint_generator scan_sequence_planner scan_executor_node scan_sequence_node
+  TARGETS sphere_waypoint_generator scan_sequence_planner scan_recording
+          scan_executor_node scan_sequence_node scan_replay_node
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -100,6 +129,8 @@ if(BUILD_TESTING)
   ament_add_gtest(test_sectors test/test_sectors.cpp)
   target_link_libraries(test_sectors sphere_waypoint_generator)
   ament_target_dependencies(test_sectors geometry_msgs Eigen3)
+  ament_add_gtest(test_scan_recording test/test_scan_recording.cpp)
+  target_link_libraries(test_scan_recording scan_recording)
 endif()
 
 ament_package()

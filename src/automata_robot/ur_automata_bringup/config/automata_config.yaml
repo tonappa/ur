@@ -196,7 +196,17 @@ scan:
   # 5 s è il default storico; in scena cluttered (gambe, muri) salire a 10-15 s
   # aiuta i waypoint difficili. Costo: peggiore solo sui waypoint che falliscono;
   # i facili tornano in <100 ms appena trovano un path.
-  planning_time: 5.0
+  # 2026-09-29: 15 s. With RRTstar every OMPL segment uses the whole time (it
+  # keeps shortening the path), and planning time is only paid in the
+  # calibration run: the replay does not plan.
+  planning_time: 15.0
+  # When nothing is found in planning_time, try again with these times before
+  # going to the recovery pose (home / lower_scan_ready). [] = recovery at once.
+  retry_planning_times: [30.0, 60.0]
+  # OMPL algorithm of those retries. RRTstar (one tree from the start) found no
+  # path to wp 13 in 15 + 30 + 60 s; RRTConnect (trees from both ends, stops at
+  # the first solution) gets through narrow passages like that one.
+  retry_ompl_algorithm: RRTConnect
 
   # Numero di tentativi indipendenti di planning per ogni waypoint.
   # Ogni attempt usa un seed casuale diverso → tre chance di trovare un path
@@ -224,3 +234,11 @@ scan:
   joint_cost_weight: 0.1
   # A motion is reported as an arm swing when the elbow travels more than this (m).
   swing_threshold_m: 0.25
+
+  # Recorded scan (path inside the container). Calibration run:
+  #   ros2 launch ur_automata_scan scan_sequence.launch.py record:=true
+  # saves every executed motion here at the end of a complete scan; work sessions:
+  #   ros2 launch ur_automata_scan scan_replay.launch.py
+  # play it back without planning. Record again after changing anything in the
+  # cell (center, radius, walls, platform, end effector, TCP, base pose).
+  recording_file: /home/ros/ur/recordings/scan_sequence.yaml
