@@ -22,7 +22,7 @@ def _load_config():
 
 def _load_kinematics_yaml():
     """Carica kinematics.yaml di ur_automata_moveit_config come dizionario.
-    Serve a istanziare il plugin IK (KDL) sul RobotState locale del nodo:
+    Serve a istanziare il plugin IK (TRAC-IK) sul RobotState locale del nodo:
     senza questi parametri il setFromIK fallisce con 'No kinematics solver
     instantiated for group ur_manipulator'."""
     path = os.path.join(

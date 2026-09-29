@@ -111,7 +111,7 @@ static void setup_raw_terminal()
 {
   if (!isatty(STDIN_FILENO)) {
     // No interactive terminal (e.g. lanciato via ros2 launch): tasti disabilitati.
-    // Resta in pausa: lo start arriva dal service /scan_sequence/start.
+    // Resta in pausa: lo start arriva dal service /scan_sequence_node/start.
     g_stdin_is_tty = false;
     return;
   }
@@ -479,7 +479,7 @@ static void render_table(const std::vector<WpRow> & rows, bool lock_pitch,
 }
 
 // ============================================================================
-// Marker helpers (unchanged behaviour)
+// Marker helpers
 // ============================================================================
 static Marker make_sphere_marker(int id, const geometry_msgs::msg::Pose & pose,
                                  const std::string & frame, const Color & c)
@@ -590,7 +590,7 @@ static void publish_markers(
 }
 
 // ============================================================================
-// Candidati IK e seed per i rami (Step 3)
+// Candidati IK e seed per i rami
 // ============================================================================
 // Una configurazione valida che raggiunge un waypoint (o il suo fallback).
 struct Candidate {
@@ -769,7 +769,7 @@ static std::vector<std::vector<double>> trajectory_path(
 
 
 // ============================================================================
-// Catena di planner (Step 2)
+// Catena di planner
 // ============================================================================
 struct PlannerChoice {
   std::string pipeline;   // es. "pilz_industrial_motion_planner" oppure "ompl"
@@ -1044,11 +1044,11 @@ int main(int argc, char ** argv)
   // WARN/ERROR/FATAL still pass through.
   rcutils_logging_set_default_logger_level(RCUTILS_LOG_SEVERITY_WARN);
 
-  // --- Service interface: /scan_sequence/start e /scan_sequence/pause ---
+  // --- Service interface: /scan_sequence_node/start e /scan_sequence_node/pause ---
   // Lo scan parte sempre in pausa. Per farlo partire (o riprendere dopo una pausa)
-  //   ros2 service call /scan_sequence/start std_srvs/srv/Trigger {}
+  //   ros2 service call /scan_sequence_node/start std_srvs/srv/Trigger {}
   // Per metterlo in pausa mid-scan
-  //   ros2 service call /scan_sequence/pause std_srvs/srv/Trigger {}
+  //   ros2 service call /scan_sequence_node/pause std_srvs/srv/Trigger {}
   // I tasti SPACE/Q restano attivi se il nodo gira su un TTY interattivo.
   using TriggerSrv = std_srvs::srv::Trigger;
 

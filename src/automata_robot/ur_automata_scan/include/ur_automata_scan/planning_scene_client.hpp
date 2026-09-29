@@ -13,13 +13,13 @@
 #include <moveit_msgs/msg/planning_scene_components.hpp>
 
 // ============================================================================
-// Planning scene locale (Step 1)
+// Planning scene locale
 // ============================================================================
 // Copia locale della planning scene di move_group (oggetti del mondo + matrice
-// delle collisioni permesse). Serve per scartare le soluzioni IK in collisione
-// PRIMA di chiamare plan(): TRAC-IK non conosce la scena, e un goal in
-// collisione fa fallire OMPL solo dopo aver consumato tutto il planning_time.
-// La scena e' statica durante lo scan, quindi la leggiamo una volta sola.
+// delle collisioni permesse). scan_sequence_node la usa per scartare le
+// soluzioni IK in collisione PRIMA di chiamare plan() (TRAC-IK non conosce la
+// scena); scan_replay_node per controllare i movimenti registrati prima di
+// eseguirli. La scena e' statica durante lo scan: si legge una volta sola.
 inline planning_scene::PlanningScenePtr fetch_planning_scene(
   rclcpp::Node::SharedPtr node,
   const moveit::core::RobotModelConstPtr & robot_model,

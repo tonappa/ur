@@ -1,5 +1,5 @@
 robot:
-  ip: 192.168.56.101         # UR 192.168.1.97 (o URSim) IP address URSIM 192.168.56.101
+  ip: 192.168.56.101         # real robot 192.168.1.97, URSim 192.168.56.101
   type: ur5                 # ur3, ur3e, ur5, ur5e, ur10, ur10e, ur16e
   # Posa della base nel frame `world` (giunto fisso world -> base_link della URDF).
   # La legge direttamente lo xacro, quindi driver e MoveIt generano la stessa
@@ -15,7 +15,7 @@ planning:
   group: ur_manipulator
   global_frame: world                  # frame in cui sono espressi gli ostacoli e il centro dello scan
   end_effector_link: ee_automata_tcp   # tip_link del kinematic chain (deve coincidere col SRDF)
-  trajectory_scaling_factor: 0.4       # default conservativo per i primi test
+  trajectory_scaling_factor: 0.4       # speed of the calibration run; the replay keeps it (start low on the real robot)
   # group_state SRDF (ur_automata_moveit_config/config/ur_automata.srdf): pose iniziale,
   # recovery dell'emisfero superiore (home_pose_name) e di quello inferiore
   # (lower_home_pose_name). Sono in giunti, quindi dipendono da robot.base_rpy:
@@ -23,7 +23,7 @@ planning:
   #   base a muro     -> home_wall / home_wall (le altre finiscono nella piattaforma)
   home_pose_name: home
   lower_home_pose_name: lower_scan_ready
-  use_moveit: true                     # use moveit
+  use_moveit: true
   use_scene: true                      # spawn scene with MoveIt, scene defined in ur_automata_scene pkg
   use_rviz: true                       # launch RViz alongside MoveIt
 
@@ -119,14 +119,12 @@ scan:
   fallback_search: true  # se true, cerca un punto alternativo vicino ai FAIL (entrambi gli emisferi)
   fallback_radius_mm: 20.0  # raggio di ricerca sulla sfera in mm (es. 10-30)
 
-  # Quando lock_pitch=false: ricerca del pitch attorno a Y_TCP (gradi).
-  # Per ogni waypoint si provano TUTTI gli offset in [-range, +range] con passo step;
-  # tra quelli con IK valida vince quello che minimizza:
-  #   joint_distance(soluzione_IK, stato_corrente) + xparallel_bias * |offset_rad|
-  # joint_distance: somma quadratica delle differenze dei giunti rivoluti.
-  # xparallel_bias: 0.0 = qualsiasi pitch va bene; 0.05 = preferenza moderata per
-  #                 X parallelo (offset=0); valori alti (>0.3) = X parallelo quasi
-  #                 sempre, eccetto quando un altro pitch evita movimenti enormi.
+  # When lock_pitch=false: rotation of the camera around its optical axis (Y_TCP).
+  # Every offset in [-range, +range] with this step is tried for every waypoint,
+  # and every one with a valid IK becomes a candidate of the DP.
+  # xparallel_bias: extra DP cost per radian of offset. 0.0 = any rotation is
+  #                 fine; 0.05 = mild preference for X horizontal (offset 0);
+  #                 > 0.3 = X horizontal almost always.
   pitch_search_range_deg: 180.0
   pitch_search_step_deg:  15.0
   pitch_xparallel_bias:   0.05
@@ -148,7 +146,7 @@ scan:
   #               collisione: percorso ripetibile, senza le deviazioni casuali
   #               di RRTConnect. Serve `stomp_planning.yaml` in
   #               ur_automata_moveit_config/config.
-  #   ompl      → RRTConnect, ultima risorsa.
+  #   ompl      → OMPL with `ompl_algorithm`, last resort.
   # Il centro dell'arco e' letto in `planning.global_frame`, che deve coincidere
   # con il frame radice del modello (qui `world`).
   # dp10 con [pilz_circ, pilz_ptp, stomp, ompl]: 262 s contro 143 s di dp7 e
@@ -171,13 +169,9 @@ scan:
   # spends the whole planning_time shortening it.
   ompl_algorithm: RRTstar
 
-  # Tempo massimo (secondi) per un singolo tentativo di planning OMPL.
-  # 5 s è il default storico; in scena cluttered (gambe, muri) salire a 10-15 s
-  # aiuta i waypoint difficili. Costo: peggiore solo sui waypoint che falliscono;
-  # i facili tornano in <100 ms appena trovano un path.
-  # 2026-09-29: 15 s. With RRTstar every OMPL segment uses the whole time (it
-  # keeps shortening the path), and planning time is only paid in the
-  # calibration run: the replay does not plan.
+  # Time (s) of one OMPL planning request. With RRTstar every OMPL segment uses
+  # the whole time (it keeps shortening the path); planning time is only paid in
+  # the calibration run, the replay does not plan.
   planning_time: 15.0
   # When nothing is found in planning_time, try again with these times before
   # going to the recovery pose (home / lower_scan_ready). [] = recovery at once.
@@ -187,10 +181,8 @@ scan:
   # the first solution) gets through narrow passages like that one.
   retry_ompl_algorithm: RRTConnect
 
-  # Numero di tentativi indipendenti di planning per ogni waypoint.
-  # Ogni attempt usa un seed casuale diverso → tre chance di trovare un path
-  # quando uno solo non basta. OMPL si ferma al primo che riesce, quindi il
-  # tempo extra si paga solo nei casi difficili. Default MoveIt: 1.
+  # Independent OMPL attempts per request, run in parallel with different random
+  # seeds; MoveIt keeps the best path. Default MoveIt: 1.
   planning_attempts: 3
 
   # --- Sectors and arm swings (scan_sequence_node) ---
