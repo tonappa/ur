@@ -31,22 +31,6 @@ ament_target_dependencies(sphere_waypoint_generator
   Eigen3
 )
 
-# ── Nodo esecutore ────────────────────────────────────────────────────────────
-add_executable(scan_executor_node
-  src/scan_executor_node.cpp
-)
-target_link_libraries(scan_executor_node
-  sphere_waypoint_generator
-)
-ament_target_dependencies(scan_executor_node
-  rclcpp
-  geometry_msgs
-  visualization_msgs
-  moveit_ros_planning_interface
-  Eigen3
-  std_srvs
-)
-
 # ── Libreria DP per la scelta della sequenza (pura, solo STL) ─────────────────
 add_library(scan_sequence_planner
   src/scan_sequence_planner.cpp
@@ -66,8 +50,7 @@ target_include_directories(scan_recording PUBLIC
 )
 target_link_libraries(scan_recording yaml-cpp::yaml-cpp)
 
-# ── Nodo esecutore v2 (enumerazione offline + DP + planner di riserva) ────────
-# scan_executor_node resta invariato come backup; questo e' l'evoluzione.
+# ── Scan node (offline enumeration + DP + planner chain, calibration run) ─────
 add_executable(scan_sequence_node
   src/scan_sequence_node.cpp
 )
@@ -111,7 +94,7 @@ install(
 )
 install(
   TARGETS sphere_waypoint_generator scan_sequence_planner scan_recording
-          scan_executor_node scan_sequence_node scan_replay_node
+          scan_sequence_node scan_replay_node
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

@@ -116,11 +116,8 @@ scan:
   occlusion_check: true
   occlusion_disk_radius: 0.15   # platform disk radius (m), Ø300 mm
   occlusion_margin: 0.01
-  occlusion_threshold_deg: 20.0  # only scan_executor_node (backup): view cone around the camera -> center axis
   fallback_search: true  # se true, cerca un punto alternativo vicino ai FAIL (entrambi gli emisferi)
   fallback_radius_mm: 20.0  # raggio di ricerca sulla sfera in mm (es. 10-30)
-  fallback_planning_time: 3.0  # planning_time più basso per il fallback
-  fallback_max_plan_attempts: 3  # max numero di plan() nel fallback (i top N candidati per joint_distance)
 
   # Quando lock_pitch=false: ricerca del pitch attorno a Y_TCP (gradi).
   # Per ogni waypoint si provano TUTTI gli offset in [-range, +range] con passo step;
@@ -133,15 +130,6 @@ scan:
   pitch_search_range_deg: 180.0
   pitch_search_step_deg:  15.0
   pitch_xparallel_bias:   0.05
-
-  # Timeout (secondi) di un singolo setFromIK quando lock_pitch=false.
-  # Più alto = KDL ha più tempo per fare random-restart e trovare soluzioni in
-  # configurazioni difficili (vicino a singolarità, grandi rotazioni). Costa al
-  # massimo (n_offset × ik_timeout) per waypoint nel caso pessimo, ma in pratica
-  # ci si ferma molto prima perché di solito qualche offset trova IK in pochi ms.
-  # Con TRAC-IK il timeout può essere molto più basso (5-50 ms basta).
-  # Con KDL serviva ~0.2 s perché era più lento e meno robusto.
-  ik_timeout: 0.05 #0.05
 
   # Timeout (secondi) di ogni chiamata IK nella fase di enumerazione di
   # scan_sequence_node (TRAC-IK in modalita' Speed). Le pose raggiungibili
@@ -169,17 +157,8 @@ scan:
   # Si resta su retta + OMPL; la catena resta disponibile per altre prove.
   planners: [pilz_ptp, ompl]
 
-  # Planner di scan_executor_node (nodo di backup, scan.launch.py). Non usato da
-  # scan_sequence_node, che segue la catena `planners` qui sopra.
-  #   ompl     → OMPL (sampling-based, supporta path constraints)
-  #   pilz_ptp → Pilz Industrial Motion Planner, point-to-point in joint-space (rapido, deterministico, no constraints)
-  #   pilz_lin → Pilz LIN, lineare in cartesiano (rischio singolarità)
-  # NB: pilz_* IGNORA il path constraint usato da lock_pitch=false.
-  # NB: per usare pilz_* serve `pilz_industrial_motion_planner_planning.yaml` in ur_automata_moveit_config/config.
-  planner: pilz_ptp
-
   # Algoritmo OMPL, usato quando si pianifica con OMPL (voce `ompl` in
-  # `planners`, oppure `planner: ompl`). Ignorato dagli altri planner.
+  # `planners`). Ignorato dagli altri planner.
   # Opzioni tipiche dell'ompl_planning.yaml upstream UR:
   #   RRTConnect (default, bidirezionale, veloce, non ottimo)
   #   RRT, RRTstar (asintoticamente ottimo), TRRT, BiTRRT, LBTRRT

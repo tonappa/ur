@@ -29,7 +29,7 @@ with `scan_sequence_node`:
 | `platform01.stl` (full platform) | 79 / 82 | 159 s | PTP 72 / OMPL 8 | wp 38, 54, 60 lost: every IK solution collides with the platform. wp 79 is reached but the stem blocks the view |
 | `platform01.stl` + line-of-sight check | 78 / 82 | 171 s | PTP 72 / OMPL 8 | wp 60 and 79 dropped because the view is blocked, wp 38 and 54 fail IK |
 
-For comparison, the older `scan_executor_node` reached 72 / 82 in 322 s
+For comparison, the first scan node (`scan_executor_node`, removed on 2026-09-29) reached 72 / 82 in 322 s
 (same sphere, older scene).
 
 **Arm swings (2026-09-29).** The scan is now visited sector by sector, the
@@ -471,11 +471,6 @@ sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' ~/ur/log/<name>.log \
   | grep -E 'Sequenza:|Previsione:|Scan complete|Planner usati|Tempo scansione|Sbracciate:' | sort -u
 ```
 
-`scan_executor_node` (`scan.launch.py`) is the previous version, without the
-offline enumeration or the DP: it plans and executes one waypoint at a time. It
-is kept as a reference/backup and its services are `/scan_executor_node/start`
-and `/scan_executor_node/pause`.
-
 > The waypoint markers (spheres + orientation arrows, colored by status) are
 > published on `/scan_waypoints_markers`. The bring-up's `automata.rviz` config
 > already has the **Scan waypoints** display on that topic, so you do not need
@@ -504,20 +499,18 @@ and `/scan_executor_node/pause`.
 | `lock_pitch` | `true`: TCP X axis horizontal, no rotation about Y. `false`: free pitch, the node searches for an offset with a valid IK |
 | `pitch_search_range_deg`, `pitch_search_step_deg` | range and step of the pitch search |
 | `pitch_xparallel_bias` | `0.0` = any pitch is fine; `0.05` = mild preference for X parallel; `>0.3` = X parallel almost always |
-| `occlusion_check`, `occlusion_disk_radius`, `occlusion_margin` | discards IK solutions where an arm link hides part of the platform disk from the camera. Sight lines go from the camera to the disk center and to 24 points on its rim (QR codes all around the platform, on top and below) and are checked against the real arm collision meshes, in both hemispheres. `occlusion_margin` = how close a link may come to a line of sight. (`occlusion_threshold_deg`, a view cone around the camera→center axis, is only used by the backup `scan_executor_node`.) |
+| `occlusion_check`, `occlusion_disk_radius`, `occlusion_margin` | discards IK solutions where an arm link hides part of the platform disk from the camera. Sight lines go from the camera to the disk center and to 24 points on its rim (QR codes all around the platform, on top and below) and are checked against the real arm collision meshes, in both hemispheres. `occlusion_margin` = how close a link may come to a line of sight. |
 
 **IK and planning**
 
 | parameter | effect |
 |---|---|
-| `ik_timeout` | timeout of a single `setFromIK` during execution. With TRAC-IK 5–50 ms is enough |
 | `enum_ik_timeout` | IK timeout during the enumeration phase (`scan_sequence_node`). Worst-case cost of the phase = waypoints × pitch values × seeds × timeout |
 | `planners` | chain used by `scan_sequence_node`: each segment tries the planners in order and stops at the first that succeeds. Default `[pilz_ptp, ompl]`; the full chain `[pilz_circ, pilz_ptp, stomp, ompl]` was measured slower (262 s vs 143 s) without reducing the segments that fall back to OMPL |
-| `planner` | planner of `scan_executor_node` (backup node): `pilz_ptp`, `pilz_lin`, `ompl` |
 | `ompl_algorithm` | used when planning with OMPL (`RRTConnect`, `RRTstar`, `PRM`, …) |
 | `planning_time`, `planning_attempts` | time and independent attempts per waypoint. In a cluttered scene, raising it to 10–15 s helps the hard points |
 | `retry_planning_times`, `retry_ompl_algorithm` | when nothing is found in `planning_time`, try again with each of these times (e.g. `[30.0, 60.0]`) and with this OMPL algorithm (default `RRTConnect`) before going to the recovery pose. RRTstar grows one tree from the start and can miss a narrow passage for minutes (wp 13 under the platform: nothing in 15 + 30 + 60 s); RRTConnect grows trees from both ends and gets through. Planning time only matters in the calibration run, the replay does not plan |
-| `fallback_search`, `fallback_radius_mm`, `fallback_planning_time`, `fallback_max_plan_attempts` | search for an alternative point near a failed waypoint |
+| `fallback_search`, `fallback_radius_mm` | offline search for an alternative point on the sphere near a waypoint that has no valid IK solution |
 
 Allowed entries in `planners`:
 
