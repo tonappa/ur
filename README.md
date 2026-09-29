@@ -36,7 +36,7 @@ For comparison, the older `scan_executor_node` reached 72 / 82 in 322 s
 sequence cost is the distance the elbow and the TCP actually travel, walls and a
 ceiling keep the arm inside the cell, the arm may not hide any part of the
 platform disk, and the TCP sits on the real lens center of the V2 end effector
-(see §9.2, §9.3, §10). Measured on full scans in URSim:
+(see §9.2, §9.3, §10); the scan can be recorded once and replayed (§9.4). Measured on full scans in URSim:
 
 | run | reached | time | swings (elbow > 0.25 m) | elbow path | TCP path | OMPL segments |
 |---|---|---|---|---|---|---|
@@ -516,6 +516,7 @@ and `/scan_executor_node/pause`.
 | `planner` | planner of `scan_executor_node` (backup node): `pilz_ptp`, `pilz_lin`, `ompl` |
 | `ompl_algorithm` | used when planning with OMPL (`RRTConnect`, `RRTstar`, `PRM`, …) |
 | `planning_time`, `planning_attempts` | time and independent attempts per waypoint. In a cluttered scene, raising it to 10–15 s helps the hard points |
+| `retry_planning_times`, `retry_ompl_algorithm` | when nothing is found in `planning_time`, try again with each of these times (e.g. `[30.0, 60.0]`) and with this OMPL algorithm (default `RRTConnect`) before going to the recovery pose. RRTstar grows one tree from the start and can miss a narrow passage for minutes (wp 13 under the platform: nothing in 15 + 30 + 60 s); RRTConnect grows trees from both ends and gets through. Planning time only matters in the calibration run, the replay does not plan |
 | `fallback_search`, `fallback_radius_mm`, `fallback_planning_time`, `fallback_max_plan_attempts` | search for an alternative point near a failed waypoint |
 
 Allowed entries in `planners`:
@@ -606,7 +607,52 @@ away from the sphere by 5-15 cm, moves and comes back with three PTP motions
 (never free in this cell: backing away pushes the upper arm into the platform
 or the wrist into the table).
 
-### 9.4 Scene
+### 9.4 Calibration and replay
+
+Planning a scan takes ~1.5 min before the robot moves (IK enumeration and
+sequence), and every blocked segment waits for OMPL. For work sessions the scan
+is **recorded once** and then **played back** with the same motions and timing
+every time.
+
+**Calibration** (once, and again after changing anything in the cell):
+
+```bash
+ros2 launch ur_automata_scan scan_sequence.launch.py record:=true 2>&1 | tee ~/ur/log/calibration.log
+ros2 service call /scan_sequence_node/start std_srvs/srv/Trigger {}
+```
+
+A segment that OMPL cannot solve in `planning_time` is tried again with
+`retry_planning_times` before going to the recovery pose: the calibration may
+take longer, the replay does not. At the end of a complete scan every executed
+motion (waypoints, recoveries, return to `home`) is saved with its full timing to `scan.recording_file`
+(default `recordings/scan_sequence.yaml` in the repo). An interrupted scan is
+not saved. If the run needed recoveries they are recorded too, and the summary
+suggests running the calibration again.
+
+**Work session:**
+
+```bash
+ros2 launch ur_automata_scan scan_replay.launch.py
+ros2 service call /scan_replay_node/start std_srvs/srv/Trigger {}
+ros2 service call /scan_replay_node/pause std_srvs/srv/Trigger {}   # stops after the current motion
+```
+
+Before moving, `scan_replay_node` refuses the recording if:
+
+- scan center, radius, planning group or end-effector link differ from
+  `automata_config.yaml`;
+- the current robot model does not put the camera where it was recorded at
+  the end of every waypoint motion (2 mm / 1°): TCP, end effector or base pose
+  changed;
+- any recorded point collides with the current planning scene (walls, platform
+  or anything else changed).
+
+Then it moves to the first recorded point with a planned motion and plays the
+recorded motions one after the other. MoveIt refuses a motion if the robot is
+not where it starts. The recorded speed is the one of the calibration
+(`trajectory_scaling_factor`); the PolyScope speed slider still slows it down.
+
+### 9.5 Scene
 
 `platform_sim: true` builds the platform as a disk + 3 cylindrical legs.
 `false` loads the STL file named by `platform_mesh` from
@@ -655,13 +701,15 @@ docker/                  Dockerfile, entrypoint, Python requirements
 docker-compose.yaml      ros_dev service: GPU, X11, host network, workspace mount
 run.sh                   build/rebuild/run/down wrapper
 start_ursim_seccomp.sh   URSim start with the seccomp workaround
+recordings/              recorded scans for scan_replay_node (written by the calibration run)
 
 src/automata_robot/
   ur_automata_bringup/         single config + top-level launch files (control, moveit, bringup) + RViz
   ur_automata_description/     cell URDF/xacro, end-effector mesh, visualization-only launch
   ur_automata_moveit_config/   SRDF, kinematics (TRAC-IK), limits, OMPL/Pilz/STOMP pipelines, MoveIt controllers, generated launch files
   ur_automata_scene/           planning scene: table, platform, object, walls; STL/OBJ meshes
-  ur_automata_scan/            spherical waypoint generation, sequence planner (DP), executor nodes, gtest
+  ur_automata_scan/            spherical waypoint generation, sequence planner (DP), executor nodes,
+                               scan recording + replay node, gtest
 
 src/utils/                     upstream UR submodules (driver and description), jazzy branch — read-only
 ```
