@@ -447,11 +447,7 @@ The node:
    travels as little as possible in space (elbow path + TCP path along each
    joint-space segment, plus a small joint term);
 5. executes waypoint by waypoint, trying the `planners` chain and falling back
-   to a nearby point if a waypoint is unreachable. A segment whose straight
-   joint-space line collides is first tried as a **set-back path**: the camera
-   backs away from the sphere (along the radius, or horizontally away from the
-   platform axis; 10, 15 or 5 cm), moves, and comes back, three PTP motions computed and collision-checked offline; OMPL
-   is used only when no set-back path is free;
+   to a nearby point if a waypoint is unreachable;
 6. goes back to `home` and prints a summary (reached / failed, causes, time,
    how many times each planner was used, how many waypoints were dropped for a
    blocked view, arm swings measured on the executed trajectories).
@@ -597,16 +593,18 @@ PTP), computed with forward kinematics, plus a small joint term.
 | `swing_threshold_m` | a motion is reported as an arm swing when the elbow travels more than this |
 
 The summary line `Sbracciate:` counts the executed motions whose elbow path is
-above the threshold and lists them, with the planner that produced each one (a
-set-back path counts as one motion together with the final approach, labelled
-`via arretrata + ...`). In the forecast, blocked segments show whether they
-have a set-back path or will go to OMPL.
+above the threshold and lists them, with the planner that produced each one.
+In the forecast, blocked segments (straight line in collision) are listed as
+going to OMPL.
 Recoveries and the final return to `home` are not counted.
 
 Tried and dropped on 2026-09-29: per-joint weights with an IK-branch penalty in
-the DP cost (more swings than the plain joint distance), and a home pose per
+the DP cost (more swings than the plain joint distance); a home pose per
 sector (the DP never chose it when it was optional: a detour always makes the
-arm travel more).
+arm travel more); a set-back path on blocked segments, i.e. the camera backs
+away from the sphere by 5-15 cm, moves and comes back with three PTP motions
+(never free in this cell: backing away pushes the upper arm into the platform
+or the wrist into the table).
 
 ### 9.4 Scene
 

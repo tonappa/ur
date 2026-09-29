@@ -1311,9 +1311,6 @@ int main(int argc, char ** argv)
     return 1;
   }
   planners.circ_center = make_circ_center_constraint(global_frame, ee_link, cfg.center);
-  // Set-back paths (see FASE 2) use straight joint-space motions only.
-  PlannerSetup ptp_only;
-  ptp_only.chain.push_back(PlannerChoice{"pilz_industrial_motion_planner", "PTP"});
 
   std::string planner_label;
   for (size_t k = 0; k < planners.chain.size(); ++k) {
@@ -1754,111 +1751,11 @@ int main(int argc, char ** argv)
   const std::vector<int> & chosen_wp = seq.chosen;   // chosen candidate per waypoint, -1 = none
   auto layer_name = [&](size_t k) { return "#" + std::to_string(k); };
 
-  // Set-back path for the blocked segments of the chain. A segment A -> B is
-  // blocked when its straight joint-space line collides (usually under the
-  // platform, near the stem): instead of OMPL, the camera backs away from the
-  // sphere (A -> A'), moves (A' -> B') and comes back (B' -> B), three short
-  // PTP motions away from the crowded area. A' and B' are solved with the IK
-  // seeded from A and B, so the arm keeps its configuration. Directions: along
-  // the radius, or horizontally away from the platform axis (along the radius
-  // the lower hemisphere backs down toward the table). Distances 10, 15, 5 cm.
-  // OMPL stays for the segments that have no free set-back path; for those the
-  // forecast lists why every attempt failed.
-  struct SetBack {
-    bool found = false;
-    int from_wp = -1;             // waypoint the segment starts from
-    double distance = 0.0;        // m
-    std::vector<double> out_q;    // A': set back from the previous waypoint
-    std::vector<double> in_q;     // B': set back from this waypoint
-    std::string why_not;          // when not found: the failure of every attempt
-  };
-  std::vector<SetBack> set_back(waypoints.size());
-  const double set_back_ik_timeout = enum_ik_timeout * 20.0;
-  // Returns "" when the set-back configuration is valid, otherwise the reason.
-  auto set_back_config = [&](const std::vector<double> & q, double distance, bool horizontal,
-                             std::vector<double> & out) -> std::string {
-    moveit::core::RobotState st(work_state);
-    st.setJointGroupPositions(jmg, q);
-    st.update();
-    Eigen::Isometry3d pose = st.getGlobalLinkTransform(ee_link);
-    Eigen::Vector3d dir = pose.translation() - cfg.center;
-    if (horizontal) dir.z() = 0.0;
-    if (dir.norm() < 1e-3) return "direzione";   // pole: no horizontal direction
-    pose.translation() += distance * dir.normalized();
-    if (!st.setFromIK(jmg, pose, ee_link, set_back_ik_timeout)) return "IK";
-    st.update();
-    if (scene && scene->isStateColliding(st, planning_group)) {
-      // Name the first contact, e.g. collisione[forearm_link/rightwall].
-      collision_detection::CollisionRequest req;
-      collision_detection::CollisionResult res;
-      req.contacts     = true;
-      req.max_contacts = 1;
-      req.group_name   = planning_group;
-      scene->checkCollision(req, res, st);
-      if (res.contacts.empty()) return "collisione";
-      const auto & pair = res.contacts.begin()->first;
-      return "collisione[" + pair.first + "/" + pair.second + "]";
-    }
-    st.copyJointGroupPositions(jmg, out);
-    // Same arm configuration: only a small adjustment of every joint.
-    for (size_t k = 0; k < out.size(); ++k) {
-      if (std::abs(out[k] - q[k]) > 0.6) return "giunti";
-    }
-    return "";
-  };
-  {
-    int prev_k = -1;
-    int prev_c = 0;
-    const double distances[3] = {0.10, 0.15, 0.05};
-    for (size_t k = 0; k < dp_layers.size(); ++k) {
-      if (chosen_wp[k] < 0) continue;
-      const int c = chosen_wp[k];
-      // Not from the start pose: it is not on the sphere.
-      if (prev_k >= 0 && !edge_ok(prev_k, prev_c, static_cast<int>(k), c)) {
-        const std::vector<double> & qa = dp_layers[prev_k][prev_c].joints;
-        const std::vector<double> & qb = dp_layers[k][c].joints;
-        std::string why_not;
-        for (int horizontal = 0; horizontal < 2 && !set_back[k].found; ++horizontal) {
-          for (double d : distances) {
-            SetBack sb;
-            char attempt[24];
-            std::snprintf(attempt, sizeof(attempt), " %s%.0f:", horizontal ? "orizz" : "rad", d * 100.0);
-            std::string fail = set_back_config(qa, d, horizontal == 1, sb.out_q);
-            if (!fail.empty()) { why_not += attempt + fail + "(A')"; continue; }
-            fail = set_back_config(qb, d, horizontal == 1, sb.in_q);
-            if (!fail.empty()) { why_not += attempt + fail + "(B')"; continue; }
-            if (!segment_is_free(qa, sb.out_q))       { why_not += attempt + std::string("tratto A-A'"); continue; }
-            if (!segment_is_free(sb.out_q, sb.in_q))  { why_not += attempt + std::string("tratto A'-B'"); continue; }
-            if (!segment_is_free(sb.in_q, qb))        { why_not += attempt + std::string("tratto B'-B"); continue; }
-            sb.found = true;
-            sb.from_wp = prev_k;
-            sb.distance = horizontal ? -d : d;   // negative = horizontal (only for the report)
-            set_back[k] = sb;
-            break;
-          }
-        }
-        if (!set_back[k].found) set_back[k].why_not = why_not;
-      }
-      prev_k = static_cast<int>(k);
-      prev_c = c;
-    }
-  }
-  // The three straight joint-space segments of a set-back path, as one path.
-  auto set_back_path = [&](const std::vector<double> & qa, const SetBack & sb,
-                           const std::vector<double> & qb) {
-    std::vector<std::vector<double>> path = joint_line(qa, sb.out_q);
-    for (const auto & point : joint_line(sb.out_q, sb.in_q)) path.push_back(point);
-    for (const auto & point : joint_line(sb.in_q, qb)) path.push_back(point);
-    return path;
-  };
-
   // Forecast on the chosen chain, before moving: segments as straight lines in
-  // joint space (the path of Pilz PTP), blocked segments through their set-back
-  // path. Blocked segments without one will go to OMPL, whose path is not
-  // known in advance, so they are only counted.
+  // joint space (the path of Pilz PTP). Blocked segments will go to OMPL,
+  // whose path is not known in advance, so they are only counted.
   int forecast_swings = 0;
   int forecast_blocked = 0;
-  int forecast_set_back = 0;
   double forecast_elbow_m = 0.0;
   std::vector<std::string> forecast_list;
   {
@@ -1871,21 +1768,11 @@ int main(int argc, char ** argv)
       const int c = seq.chosen[k];
       const std::vector<double> & q = dp_layers[k][c].joints;
       char line[160];
-      if (!edge_ok(prev_k, prev_c, static_cast<int>(k), c) && set_back[k].found) {
-        ++forecast_blocked;
-        ++forecast_set_back;
-        Sweep sw = sweep_of_path(set_back_path(*prev_q, set_back[k], q), work_state, jmg, elbow_link, ee_link);
-        forecast_elbow_m += sw.elbow_m;
-        if (sw.elbow_m > swing_threshold) ++forecast_swings;
-        std::snprintf(line, sizeof(line), "  %-8s -> %-8s  retta bloccata: via arretrata %s di %.0f cm, gomito %.2f m  TCP %.2f m",
-                      prev_name.c_str(), layer_name(k).c_str(), set_back[k].distance < 0 ? "orizzontale" : "radiale",
-                      std::abs(set_back[k].distance) * 100.0, sw.elbow_m, sw.tcp_m);
-        forecast_list.push_back(line);
-      } else if (!edge_ok(prev_k, prev_c, static_cast<int>(k), c)) {
+      if (!edge_ok(prev_k, prev_c, static_cast<int>(k), c)) {
         ++forecast_blocked;
         std::snprintf(line, sizeof(line), "  %-8s -> %-8s  retta bloccata: andra' a OMPL",
                       prev_name.c_str(), layer_name(k).c_str());
-        forecast_list.push_back(line + std::string("  (via arretrata:") + set_back[k].why_not + ")");
+        forecast_list.push_back(line);
       } else {
         Sweep sw = sweep_of_path(joint_line(*prev_q, q), work_state, jmg, elbow_link, ee_link);
         forecast_elbow_m += sw.elbow_m;
@@ -1940,8 +1827,6 @@ int main(int argc, char ** argv)
       extend_box(q, needed_box);
       if (edge_ok(prev_k, prev_c, static_cast<int>(k), c)) {
         for (const auto & point : joint_line(*prev_q, q)) extend_box(point, segments_box);
-      } else if (set_back[k].found) {
-        for (const auto & point : set_back_path(*prev_q, set_back[k], q)) extend_box(point, segments_box);
       }
       prev_k = static_cast<int>(k);
       prev_c = c;
@@ -2002,13 +1887,12 @@ int main(int argc, char ** argv)
       "Sequenza: %zu/%zu raggiungibili (%zu via fallback), %zu irraggiungibili, %d vista coperta | "
       "%zu candidati, %d scartati per collisione, %d per occlusione | costo DP %.1f, %zu tratti bloccati su %zu controllati, %d iter | "
       "enumerazione %.1f s, DP %.1f s\n"
-      "Previsione: %d sbracciate (gomito > %.2f m), gomito %.2f m in totale, %d tratti bloccati sulla catena (%d con via arretrata, %d -> OMPL) | "
+      "Previsione: %d sbracciate (gomito > %.2f m), gomito %.2f m in totale, %d tratti bloccati sulla catena (-> OMPL) | "
       "settori %d (offset %.0f gradi)",
       reachable, waypoints.size(), via_fallback, waypoints.size() - reachable - scene_occluded, scene_occluded,
       total_candidates, collision_rejects, occlusion_rejects, seq.total_cost, blocked_edges_total, edge_cache.size(),
       dp_iterations, enum_seconds, dp_seconds,
       forecast_swings, swing_threshold, forecast_elbow_m, forecast_blocked,
-      forecast_set_back, forecast_blocked - forecast_set_back,
       num_sectors, sector_offset_deg);
     g_sequence_summary = buf;
   }
@@ -2047,9 +1931,6 @@ int main(int argc, char ** argv)
 
   // Every executed motion, with the elbow / TCP path, for the swing report.
   std::vector<SegmentLog> segment_logs;
-  // Last waypoint reached with a normal motion, -1 after a recovery: a
-  // set-back path is used only when the arm is where it was computed from.
-  int last_reached = -1;
 
   for (size_t i = 0; i < waypoints.size(); ++i) {
     if (g_quit.load() || !rclcpp::ok()) break;
@@ -2074,34 +1955,6 @@ int main(int argc, char ** argv)
     set_marker_color(markers_array, i, COLOR_YELLOW);
     publish_markers(markers_pub, markers_array);
     render_table(rows, lock_pitch, planner_label);
-
-    // Blocked segment with a set-back path: back away from the sphere, move,
-    // come closer (PTP only). If a step fails the arm stays where it is and
-    // the normal planners below go on from there.
-    Sweep set_back_sweep;
-    bool set_back_used = false;
-    if (set_back[i].found && last_reached == set_back[i].from_wp) {
-      const std::vector<double> * steps[2] = {&set_back[i].out_q, &set_back[i].in_q};
-      for (const std::vector<double> * q : steps) {
-        moveit::core::RobotState target(work_state);
-        target.setJointGroupPositions(jmg, *q);
-        move_group.clearPathConstraints();
-        move_group.clearPoseTargets();
-        move_group.setJointValueTarget(target);
-        moveit::planning_interface::MoveGroupInterface::Plan step_plan;
-        if (!plan_with_fallback(move_group, step_plan, ptp_only, false, logger) ||
-            move_group.execute(step_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
-          RCLCPP_WARN(logger, "wp %zu: via arretrata interrotta, proseguo con i planner normali.", i);
-          break;
-        }
-        Sweep sw = sweep_of_path(trajectory_path(step_plan, work_state, jmg), work_state, jmg,
-                                 elbow_link, ee_link);
-        set_back_sweep.elbow_m += sw.elbow_m;
-        set_back_sweep.tcp_m   += sw.tcp_m;
-        set_back_used = true;
-      }
-      on_sphere = false;   // the set-back poses are off the scan sphere
-    }
 
     work_state.setJointGroupPositions(jmg, chosen.joints);
     move_group.clearPathConstraints();
@@ -2130,7 +1983,6 @@ int main(int argc, char ** argv)
         break;
       }
       on_sphere = false;   // dopo la recovery il TCP non e' piu' su un waypoint
-      last_reached = -1;
       rows[i].status = WpStatus::RUNNING;
       render_table(rows, lock_pitch, planner_label);
       move_group.setJointValueTarget(work_state);
@@ -2157,7 +2009,6 @@ int main(int argc, char ** argv)
       ++failures;
       ++exec_failures;
       on_sphere = false;   // fermo a meta' traiettoria: posizione non nota
-      last_reached = -1;
       rows[i].status = WpStatus::HOMING;
       set_marker_color(markers_array, i, COLOR_RED);
       publish_markers(markers_pub, markers_array);
@@ -2177,16 +2028,12 @@ int main(int argc, char ** argv)
     // Raggiunto
     ++successes;
     on_sphere = true;
-    last_reached = static_cast<int>(i);
     {
-      // A set-back path counts as one motion together with the final approach.
       SegmentLog seg;
       seg.what    = "#" + std::to_string(i);
-      seg.planner = set_back_used ? "via arretrata + " + used_planner : used_planner;
+      seg.planner = used_planner;
       seg.sweep   = sweep_of_path(trajectory_path(plan, work_state, jmg), work_state, jmg,
                                   elbow_link, ee_link);
-      seg.sweep.elbow_m += set_back_sweep.elbow_m;
-      seg.sweep.tcp_m   += set_back_sweep.tcp_m;
       segment_logs.push_back(seg);
     }
     rows[i].status = chosen.is_fallback ? WpStatus::FALLBACK_ORIGIN : WpStatus::DONE;
