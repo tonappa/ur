@@ -17,6 +17,77 @@ pointing at it; a photo can be taken at each waypoint.
 
 ---
 
+## Quick start (URSim)
+
+Full sequence, from a powered-off machine to a scan. Details in the numbered
+sections below.
+
+**Host, terminal 1: simulator** (it stays in the foreground).
+
+```bash
+cd ~/ur
+./start_ursim_seccomp.sh
+```
+
+Open PolyScope at http://localhost:6080: *Power on* → *Start* → *OK*, then load
+the program with the **External Control** node (Host IP `192.168.56.1`, port
+`50002`, see §6.2 for the one-time setup). Do not press Play yet.
+
+**Host, terminal 2: container, build, bring-up.**
+
+```bash
+cd ~/ur
+./run.sh run                      # opens a shell in the container
+# inside the container:
+cd /home/ros/ur
+colcon build --cmake-args -DCMAKE_CXX_FLAGS="-w" --executor sequential   # after a change or a fresh clone
+source install/setup.bash
+ros2 launch ur_automata_bringup ur_automata_bringup.launch.py
+```
+
+Now press **Play** in PolyScope (again after every bring-up restart).
+
+**Host, terminals 3 and 4: second and third shell in the same container.**
+
+```bash
+docker exec -it ur_container bash
+source /opt/ros/jazzy/setup.bash && source /home/ros/ur/install/setup.bash
+```
+
+**Calibration** (once, and again after changing the cell: platform, walls,
+sphere, end effector, TCP, base pose). Terminal 3:
+
+```bash
+ros2 launch ur_automata_scan scan_sequence.launch.py record:=true 2>&1 | tee ~/ur/log/calibration.log
+```
+
+Terminal 4, when the table is shown (~1.5 min of planning):
+
+```bash
+ros2 service call /scan_sequence_node/start std_srvs/srv/Trigger {}
+```
+
+At the end check `Registrazione salvata: ... 0 recovery`.
+
+**Work session** (every time). Terminal 3:
+
+```bash
+ros2 launch ur_automata_scan scan_replay.launch.py 2>&1 | tee ~/ur/log/replay.log
+```
+
+Terminal 4:
+
+```bash
+ros2 service call /scan_replay_node/start std_srvs/srv/Trigger {}
+ros2 service call /scan_replay_node/pause std_srvs/srv/Trigger {}   # optional: stops after the current motion
+```
+
+**Shut down:** Ctrl+C in the ROS terminals, then `./run.sh down` on the host;
+Ctrl+C in terminal 1 stops URSim (the script runs it in the foreground and
+removes the container on exit).
+
+---
+
 ## 0. Current status
 
 Latest reference runs in URSim (UR5 model, table mount, scan center
@@ -64,8 +135,9 @@ Possible next steps:
 - tighter walls, sweeping them with `dry_run`;
 - line-of-sight check with a cone of rays matching the camera field of view,
   instead of the single optical-axis ray;
-- photo trigger at each waypoint;
-- caching the computed sequence to a YAML file;
+- photo trigger at each waypoint (on hold): an MQTT "take photo" message to
+  the camera side and a "photo taken" reply to the orchestrator before the
+  replay moves on; the hook is marked in `scan_replay_node.cpp`;
 - bring-up on the real robot (calibration, IP `192.168.1.97`, low scaling,
   diagnosing the occasional abrupt stops seen during execution).
 
@@ -508,7 +580,7 @@ sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' ~/ur/log/<name>.log \
 | `enum_ik_timeout` | IK timeout during the enumeration phase (`scan_sequence_node`). Worst-case cost of the phase = waypoints × pitch values × seeds × timeout |
 | `planners` | chain used by `scan_sequence_node`: each segment tries the planners in order and stops at the first that succeeds. Default `[pilz_ptp, ompl]`; the full chain `[pilz_circ, pilz_ptp, stomp, ompl]` was measured slower (262 s vs 143 s) without reducing the segments that fall back to OMPL |
 | `ompl_algorithm` | used when planning with OMPL (`RRTConnect`, `RRTstar`, `PRM`, …) |
-| `planning_time`, `planning_attempts` | time and independent attempts per waypoint. In a cluttered scene, raising it to 10–15 s helps the hard points |
+| `planning_time`, `planning_attempts` | time of one OMPL request and parallel attempts in it. 15 s here: with RRTstar every OMPL segment uses the whole time to shorten the path, and it is only paid in the calibration run |
 | `retry_planning_times`, `retry_ompl_algorithm` | when nothing is found in `planning_time`, try again with each of these times (e.g. `[30.0, 60.0]`) and with this OMPL algorithm (default `RRTConnect`) before going to the recovery pose. RRTstar grows one tree from the start and can miss a narrow passage for minutes (wp 13 under the platform: nothing in 15 + 30 + 60 s); RRTConnect grows trees from both ends and gets through. Planning time only matters in the calibration run, the replay does not plan |
 | `fallback_search`, `fallback_radius_mm` | offline search for an alternative point on the sphere near a waypoint that has no valid IK solution |
 
@@ -519,7 +591,7 @@ Allowed entries in `planners`:
 | `pilz_circ` | arc on the sphere centered at `scan.center`: the TCP stays on the sphere and the camera frames the object for the whole segment | when not starting from a point on the sphere (skipped from `home` and from the recovery poses), near singularities, or if the arc collides |
 | `pilz_ptp` | straight line in joint space, deterministic, ~10 ms | when the line goes through an obstacle |
 | `stomp` | starts from the same line and deforms it until it is collision-free: smooth, repeatable path | when the obstacle is too large for a local deformation |
-| `ompl` | RRTConnect: almost always finds a path, but a different one every run | rarely; it is the last resort |
+| `ompl` | OMPL with `ompl_algorithm`: RRTConnect returns the first path it finds (fast, often long), RRTstar keeps shortening it for the whole `planning_time` | RRTstar can miss narrow passages: see `retry_planning_times` |
 
 The final summary prints a `Planner usati:` line with the count per planner:
 this is the metric used to compare two runs. Many segments on `ompl` mean
@@ -745,4 +817,5 @@ end-effector version means updating both the mesh **and** the TCP offset in
 | Plan fails in a few ms with `INVALID_MOTION_PLAN`, move_group says `ValidateSolution: Computed path is not valid` | the planner found a path but checked it with too large a step and it grazes a thin obstacle: lower `longest_valid_segment_fraction` in `config/ompl_planning.yaml` (currently 0.001 ≈ 1.5°) |
 | move_group warns `Cannot find planning configuration ... kConfigDefault` | the entry is missing from `planner_configs` in `ompl_planning.yaml`: OMPL ignores `scan.ompl_algorithm` and uses RRTConnect |
 | The node only reports a generic FAILURE | the real causes (Pilz limits, ValidateSolution, OMPL unable to solve) are in the move_group log: `ls -t /home/ros/.ros/log/move_group_*.log \| head -1` inside the container |
+| `scan_replay_node` refuses to start | it prints why: config (center, radius, end effector) differs from the recording, the camera poses do not match the current robot model, or a recorded point collides with the current scene. Run the calibration again (`record:=true`) |
 | RViz does not open from the container | `xhost +local:docker` (already done by `./run.sh run`) and `DISPLAY` set on the host |
