@@ -28,7 +28,7 @@ planning:
   use_rviz: true                       # launch RViz alongside MoveIt
 
 scan:
-  # Storia della posizione (URSim, r 0.30, full 4x15), vedi Plan/implementation_plan.md §9:
+  # Storia della posizione (URSim, r 0.30, full 4x15):
   #   [0.133, 0.40, 0.504]  punto estremo a 0.955 m, fuori portata
   #   [0.133, 0.35, 0.504]  0.927 m, fuori di 9 mm
   #   [0.133, 0.35, 0.470]  82/82, 140 s, 2290 candidati (anello basso lato base 124)
@@ -44,7 +44,7 @@ scan:
   #                         wp 60/79 view blocked by the platform.
   #                         Rerun 2026-09-29 (ur_client_library 2.15): 78/82, 163 s, PTP 72 / OMPL 7,
   #                         same waypoints lost, 1945 candidates.
-  # Robot a muro (robot.base_xyz/base_rpy sopra, home_wall), vedi §10:
+  # Robot a muro (robot.base_xyz/base_rpy sopra, home_wall):
   #   [0.133, 0.375, 0.455] base z 0.455, centro a 0.625 m dalla flangia: 63/82, 276 s, 19 persi
   #                         tutti nell'inferiore (braccio attraverso il disco), scena senza parete
   #   [0.133, 0.40, 0.50]   base z 0.50, centro a 0.65 m dalla flangia, parete nella scena: enumerazione

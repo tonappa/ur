@@ -1,6 +1,7 @@
 build/
 install/
 log/
+Plan/
 __pycache__/
 *.pyc
 ur.md
