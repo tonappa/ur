@@ -6,6 +6,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _load_config():
@@ -76,7 +77,8 @@ def generate_launch_description():
             "scan_stagger_rings":               s["stagger_rings"],
             "scan_adaptive_rings":              s["adaptive_rings"],
             "scan_occlusion_check":            s["occlusion_check"],
-            "scan_occlusion_threshold_deg":    s["occlusion_threshold_deg"],
+            "scan_occlusion_disk_radius":      float(s.get("occlusion_disk_radius", 0.15)),
+            "scan_occlusion_margin":           float(s.get("occlusion_margin", 0.01)),
             "scan_fallback_search":            s["fallback_search"],
             "scan_fallback_radius_mm":         s["fallback_radius_mm"],
             "scan_fallback_planning_time":     s["fallback_planning_time"],
@@ -90,8 +92,19 @@ def generate_launch_description():
             "scan_enum_ik_timeout":        s["enum_ik_timeout"],
             "scan_planning_time":          s["planning_time"],
             "scan_planning_attempts":      s["planning_attempts"],
+            # Sectors and arm swings (optional keys: defaults = old behavior)
+            "scan_sectors":                int(s.get("sectors", 0)),
+            "scan_sector_offset_deg":      float(s.get("sector_offset_deg", 0.0)),
+            "scan_joint_cost_weight":      float(s.get("joint_cost_weight", 0.1)),
+            "scan_swing_threshold_m":      float(s.get("swing_threshold_m", 0.25)),
+            "dry_run": ParameterValue(LaunchConfiguration("dry_run"), value_type=bool),
             },
         ],
     )
 
-    return LaunchDescription([scan_node])
+    return LaunchDescription([
+        # dry_run:=true plans the sequence, prints the forecast and exits
+        # without moving the robot.
+        DeclareLaunchArgument("dry_run", default_value="false"),
+        scan_node,
+    ])

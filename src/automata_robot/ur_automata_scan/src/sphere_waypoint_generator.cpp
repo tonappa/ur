@@ -1,5 +1,6 @@
 #include "ur_automata_scan/sphere_waypoint_generator.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -176,4 +177,72 @@ std::vector<geometry_msgs::msg::Pose> generate_waypoints(const ScanConfig & cfg)
   }
 
   return poses;
+}
+
+// Sector ordering: see the header.
+void order_by_sectors(const std::vector<geometry_msgs::msg::Pose> & pts,
+                      const Eigen::Vector3d & center, double phi_front,
+                      int num_sectors, bool upper,
+                      std::vector<geometry_msgs::msg::Pose> & out,
+                      std::vector<SectorBlock> & blocks)
+{
+  const double sector_width = 2.0 * M_PI / num_sectors;
+
+  // For every point: its sector, its angular distance from the pole (this
+  // identifies the ring) and its azimuth measured from the start of sector 0.
+  std::vector<int> sector(pts.size());
+  std::vector<double> pole_dist(pts.size());
+  std::vector<double> rel_phi(pts.size());
+  for (size_t i = 0; i < pts.size(); ++i) {
+    Eigen::Vector3d v(pts[i].position.x - center.x(),
+                      pts[i].position.y - center.y(),
+                      pts[i].position.z - center.z());
+    pole_dist[i] = std::acos(std::min(1.0, std::abs(v.z()) / v.norm()));
+    double phi = std::atan2(v.y(), v.x()) - phi_front + sector_width / 2.0;
+    while (phi < 0.0) phi += 2.0 * M_PI;
+    while (phi >= 2.0 * M_PI) phi -= 2.0 * M_PI;
+    rel_phi[i] = phi;
+    sector[i] = std::min(num_sectors - 1, static_cast<int>(phi / sector_width));
+    if (pole_dist[i] < 1e-6) sector[i] = 0;   // the pole has no azimuth: first sector
+  }
+
+  // Distinct rings, sorted from the pole toward the equator.
+  std::vector<double> rings;
+  for (double d : pole_dist) {
+    bool found = false;
+    for (double r : rings) {
+      if (std::abs(r - d) < 1e-4) found = true;
+    }
+    if (!found) rings.push_back(d);
+  }
+  std::sort(rings.begin(), rings.end());
+
+  for (int s = 0; s < num_sectors; ++s) {
+    SectorBlock block;
+    block.first_wp = out.size();
+    block.sector = s;
+    block.upper = upper;
+    int count = 0;
+    bool forward = true;   // walking direction along the current ring
+
+    for (size_t k = 0; k < rings.size(); ++k) {
+      size_t ring_idx = (s % 2 == 0) ? k : rings.size() - 1 - k;
+      std::vector<size_t> ring_pts;
+      for (size_t i = 0; i < pts.size(); ++i) {
+        if (sector[i] == s && std::abs(pole_dist[i] - rings[ring_idx]) < 1e-4) {
+          ring_pts.push_back(i);
+        }
+      }
+      if (ring_pts.empty()) continue;
+      std::sort(ring_pts.begin(), ring_pts.end(), [&](size_t a, size_t b) {
+        return forward ? rel_phi[a] < rel_phi[b] : rel_phi[a] > rel_phi[b];
+      });
+      for (size_t i : ring_pts) {
+        out.push_back(pts[i]);
+        ++count;
+      }
+      forward = !forward;
+    }
+    if (count > 0) blocks.push_back(block);   // empty sector: no block
+  }
 }

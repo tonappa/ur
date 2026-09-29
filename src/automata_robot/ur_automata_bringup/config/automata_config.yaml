@@ -38,6 +38,12 @@ scan:
   #                         base ma sfera piu' orizzontale e bassa -> scelta. wp 46/47 restano a 1-2
   #                         candidati per autocollisione EE<->avambraccio, nessuna posizione li sposta.
   #                         Rerun 2026-09-08 dopo il muro: 82/82, 124 s, PTP 81 / OMPL 2, 2274 candidati.
+  #                         platform01.stl (2026-09-08): 79/82, 159 s, PTP 72 / OMPL 8; wp 38/54/60
+  #                         (1-based) lost, every IK collides with the platform; wp 79 reached behind the stem.
+  #                         + line-of-sight check (2026-09-08): 78/82, 171 s, PTP 72 / OMPL 8; wp 38/54 IK,
+  #                         wp 60/79 view blocked by the platform.
+  #                         Rerun 2026-09-29 (ur_client_library 2.15): 78/82, 163 s, PTP 72 / OMPL 7,
+  #                         same waypoints lost, 1945 candidates.
   # Robot a muro (robot.base_xyz/base_rpy sopra, home_wall), vedi §10:
   #   [0.133, 0.375, 0.455] base z 0.455, centro a 0.625 m dalla flangia: 63/82, 276 s, 19 persi
   #                         tutti nell'inferiore (braccio attraverso il disco), scena senza parete
@@ -66,10 +72,14 @@ scan:
   # lati, niente davanti: la piattaforma sta a y positiva. Limiti fisici:
   #   back_y  non oltre -0.42 (a `home` il gomito arriva a y -0.37)
   #   right_x non sotto  0.75 (a `lower_scan_ready` l'EE arriva a x 0.71)
+  # First set (2026-09-29): arm envelope printed by the dry run (sectors 4,
+  # offset 45) + 0.10 m; right_x raised to 0.76 because the end-effector mesh
+  # reaches x 0.71 at lower_scan_ready (link origins stop at 0.63).
   walls:
-    back_y: 0.0
-    left_x: 0.0
-    right_x: 0.0
+    back_y: -0.47
+    left_x: -0.52
+    right_x: 0.76
+    top_z: 0.97     # ceiling height; must stay above the highest waypoint (center.z + radius) plus the end effector
   radius: 0.30               # raggio della sfera di waypoint, in metri
   hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)
   direction: latitudinal   # latitudinal | longitudinal
@@ -98,8 +108,15 @@ scan:
   lock_pitch: false
   stagger_rings: true    # se true, gli anelli pari sono sfasati di mezzo passo → copertura più uniforme
   adaptive_rings: true   # se true, points_per_ring scala con sin(theta) → meno punti al polo, più all'equatore
-  occlusion_check: true  # se true, scarta le configurazioni IK dove un link del braccio copre la vista camera→centro
-  occlusion_threshold_deg: 20.0  # angolo del cono di occlusione in gradi (tipico: 15-25)
+  # occlusion_check (scan_sequence_node): discard the IK solutions where an arm
+  # link hides part of the platform disk from the camera. Sight lines from the
+  # camera to the disk center and to 24 points on its rim (QR codes all around,
+  # on top and below), checked against the real arm collision meshes, in both
+  # hemispheres. occlusion_margin = how close (m) a link may come to a line of sight.
+  occlusion_check: true
+  occlusion_disk_radius: 0.15   # platform disk radius (m), Ø300 mm
+  occlusion_margin: 0.01
+  occlusion_threshold_deg: 20.0  # only scan_executor_node (backup): view cone around the camera -> center axis
   fallback_search: true  # se true, cerca un punto alternativo vicino ai FAIL (entrambi gli emisferi)
   fallback_radius_mm: 20.0  # raggio di ricerca sulla sfera in mm (es. 10-30)
   fallback_planning_time: 3.0  # planning_time più basso per il fallback
@@ -169,7 +186,11 @@ scan:
   #   PRM, PRMstar, LazyPRM, LazyPRMstar
   #   KPIECE, BKPIECE, LBKPIECE
   #   EST, BiEST, ProjEST, SBL, FMT, BFMT, PDST, STRIDE
-  ompl_algorithm: RRTConnect
+  # 2026-09-29: RRTstar instead of RRTConnect. OMPL only runs on the segments
+  # whose straight line collides (and on recoveries); RRTConnect returned the
+  # first random path (up to 2.7 m of elbow travel inside the walls), RRTstar
+  # spends the whole planning_time shortening it.
+  ompl_algorithm: RRTstar
 
   # Tempo massimo (secondi) per un singolo tentativo di planning OMPL.
   # 5 s è il default storico; in scena cluttered (gambe, muri) salire a 10-15 s
@@ -182,3 +203,24 @@ scan:
   # quando uno solo non basta. OMPL si ferma al primo che riesce, quindi il
   # tempo extra si paga solo nei casi difficili. Default MoveIt: 1.
   planning_attempts: 3
+
+  # --- Sectors and arm swings (scan_sequence_node) ---
+  # sectors: azimuth slices per hemisphere (0 = classic ring-by-ring order).
+  #   With 4: front (robot side), side, back, other side, for the upper and then
+  #   the lower hemisphere; rings in serpentine order inside each slice.
+  #   Dry runs 2026-09-29 (Cartesian cost): 4 segments to OMPL instead of 9 with
+  #   the classic order. A home per sector was tried and dropped: the DP never
+  #   picked it (a detour always makes the arm travel more).
+  sectors: 4
+  # Rotation of the slices (deg, counterclockwise seen from above): 0 = sector 0
+  # centered on the robot side (front / right / back / left), 45 = boundaries on
+  # the robot -> center axis (front-right / back-right / back-left / front-left).
+  sector_offset_deg: 45.0
+  # DP segment cost = elbow path + TCP path (m) along the straight joint-space
+  # line + joint_cost_weight x joint distance (rad). The joint term keeps big
+  # wrist spins from being free: they do not move the elbow but take time.
+  # (Tried on 2026-09-29: per-joint weights + IK branch penalty instead of the
+  # Cartesian paths -> worse, 20 forecast swings vs 13 of the plain joint distance.)
+  joint_cost_weight: 0.1
+  # A motion is reported as an arm swing when the elbow travels more than this (m).
+  swing_threshold_m: 0.25

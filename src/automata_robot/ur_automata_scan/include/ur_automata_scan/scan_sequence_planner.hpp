@@ -27,11 +27,23 @@ double joint_l2(const std::vector<double> & a, const std::vector<double> & b);
 // in piu', cosi' la DP lo evita quando puo' ma non scarta il waypoint.
 using EdgeFilter = std::function<bool(int prev_layer, int prev_c, int layer, int c)>;
 
+// Optional cost of the segment from candidate prev_c of layer prev_layer to
+// candidate c of layer `layer` (prev_layer = -1 is the start). When it is not
+// set the cost is joint_l2 between the two configurations.
+using EdgeCost = std::function<double(int prev_layer, int prev_c, int layer, int c)>;
+
+// How the cost of a segment between two consecutive candidates is measured.
+struct SeqCost {
+  EdgeCost edge_cost;              // empty = joint_l2
+  double blocked_penalty = 1000.0; // added to a blocked segment (see EdgeFilter)
+};
+
 // Programmazione dinamica su grafo a strati: layer i = candidati del waypoint
 // i. Sceglie un candidato per layer minimizzando la somma delle distanze
 // joint-space tra layer consecutivi (piu' gli extra_cost), partendo da
 // start_joints. I layer vuoti (waypoint irraggiungibili) vengono scavalcati.
+// `cost` sets the segment cost and the blocked-segment penalty.
 SeqResult choose_sequence(const std::vector<double> & start_joints,
                           const std::vector<std::vector<SeqCandidate>> & layers,
                           const EdgeFilter & edge_ok = EdgeFilter(),
-                          double blocked_penalty = 1000.0);
+                          const SeqCost & cost = SeqCost());

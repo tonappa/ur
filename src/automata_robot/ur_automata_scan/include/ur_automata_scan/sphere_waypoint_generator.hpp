@@ -38,3 +38,26 @@ struct ScanConfig {
 // Generates the list of poses the robot should visit during the scan.
 // At every pose the end-effector Y-axis points toward the sphere center.
 std::vector<geometry_msgs::msg::Pose> generate_waypoints(const ScanConfig & cfg);
+
+// A sector is an azimuth slice of one hemisphere. Waypoints are visited sector
+// by sector instead of ring by ring: the points of one slice are close to each
+// other and can be reached with similar arm configurations, instead of walking
+// each ring all the way around the object (on 2026-09-29 this halved the
+// segments whose straight joint-space line collides and needs OMPL).
+struct SectorBlock {
+  size_t first_wp = 0;        // index (in visit order) of the first waypoint of the sector
+  int sector = 0;             // 0 = front (robot side), then counterclockwise seen from above
+  bool upper = true;          // hemisphere
+};
+
+// Reorders the waypoints of ONE hemisphere by sectors and appends them to `out`.
+// phi_front = azimuth (rad) of the direction center -> robot base: sector 0 is
+// centered there. Inside a sector the rings go from the pole to the equator
+// (the other way round in odd sectors, so the next sector starts close to where
+// the previous one ended) and consecutive rings are walked in opposite
+// directions (serpentine).
+void order_by_sectors(const std::vector<geometry_msgs::msg::Pose> & pts,
+                      const Eigen::Vector3d & center, double phi_front,
+                      int num_sectors, bool upper,
+                      std::vector<geometry_msgs::msg::Pose> & out,
+                      std::vector<SectorBlock> & blocks);

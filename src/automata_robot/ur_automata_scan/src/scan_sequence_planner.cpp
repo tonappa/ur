@@ -16,7 +16,7 @@ double joint_l2(const std::vector<double> & a, const std::vector<double> & b)
 SeqResult choose_sequence(const std::vector<double> & start_joints,
                           const std::vector<std::vector<SeqCandidate>> & layers,
                           const EdgeFilter & edge_ok,
-                          double blocked_penalty)
+                          const SeqCost & seq_cost)
 {
   SeqResult result;
   result.chosen.assign(layers.size(), -1);
@@ -39,9 +39,12 @@ SeqResult choose_sequence(const std::vector<double> & start_joints,
 
     for (size_t c = 0; c < layer.size(); ++c) {
       for (size_t p = 0; p < prev_joints.size(); ++p) {
-        double total = prev_cost[p] + joint_l2(prev_joints[p], layer[c].joints) + layer[c].extra_cost;
+        double step = seq_cost.edge_cost
+                    ? seq_cost.edge_cost(last_layer, static_cast<int>(p), static_cast<int>(i), static_cast<int>(c))
+                    : joint_l2(prev_joints[p], layer[c].joints);
+        double total = prev_cost[p] + step + layer[c].extra_cost;
         if (edge_ok && !edge_ok(last_layer, static_cast<int>(p), static_cast<int>(i), static_cast<int>(c))) {
-          total += blocked_penalty;
+          total += seq_cost.blocked_penalty;
         }
         if (total < cost[c]) {
           cost[c] = total;

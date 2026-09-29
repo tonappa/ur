@@ -67,9 +67,30 @@ TEST(SequencePlanner, BlockedEdgesAreNotForbidden)
 {
   std::vector<std::vector<SeqCandidate>> layers = { { {{1.0}} } };
   auto edge_ok = [](int, int, int, int) { return false; };
-  SeqResult r = choose_sequence({0.0}, layers, edge_ok, 1000.0);
+  SeqCost cost;
+  cost.blocked_penalty = 1000.0;
+  SeqResult r = choose_sequence({0.0}, layers, edge_ok, cost);
   EXPECT_EQ(r.chosen[0], 0);
   EXPECT_NEAR(r.total_cost, 1001.0, 1e-9);
+}
+
+// A custom edge cost replaces joint_l2. Start (0); layer 0: A = 0.1, B = 0.5.
+// With joint_l2 A wins; with a cost that makes A expensive (e.g. a big arm
+// swing that the joints alone do not show) B wins, and the total is that cost.
+TEST(SequencePlanner, UsesCustomEdgeCost)
+{
+  std::vector<std::vector<SeqCandidate>> layers = {
+    { {{0.1}}, {{0.5}} },
+  };
+  EXPECT_EQ(choose_sequence({0.0}, layers).chosen[0], 0);
+
+  SeqCost cost;
+  cost.edge_cost = [](int /*prev_layer*/, int /*prev_c*/, int /*layer*/, int c) {
+    return (c == 0) ? 2.0 : 0.7;
+  };
+  SeqResult r = choose_sequence({0.0}, layers, EdgeFilter(), cost);
+  EXPECT_EQ(r.chosen[0], 1);
+  EXPECT_NEAR(r.total_cost, 0.7, 1e-9);
 }
 
 // Nessun wrap: da +179 a -179 gradi sono ~358 gradi di rotazione.

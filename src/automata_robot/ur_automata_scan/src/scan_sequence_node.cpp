@@ -262,14 +262,6 @@ static double joint_distance(
   return std::sqrt(sum);
 }
 
-// Returns true if any arm link falls inside the camera's view cone toward the
-// sphere center. The arm is treated as a chain of segments between the origins
-// of consecutive joints (shoulder -> elbow -> wrist 1 -> 2 -> 3); every segment
-// is sampled in a few points and each point is tested against the cone, so a
-// long link crossing the line of sight is caught even when its origin lies far
-// off-axis (checking origins only let the forearm sit in front of the camera).
-// Only points between the TCP and the center count (not behind the camera);
-// points closer than 1 cm to the TCP belong to the wrist and are skipped.
 // ----------------------------------------------------------------------------
 // Linea di vista camera -> centro contro gli oggetti della scena.
 // Segmento dal waypoint al centro: se attraversa un oggetto del mondo la foto
@@ -278,7 +270,7 @@ static double joint_distance(
 // Ignorati: il marker del centro, l'oggetto da scansionare, i keep-out di
 // margine e le intersezioni entro 3 cm dal centro (il disco sotto l'oggetto:
 // i raggi dell'emisfero inferiore lo attraversano a 4 mm dal centro).
-// ponytail: un solo raggio lungo l'asse ottico; campionare un cono di raggi
+// Known limit: un solo raggio lungo l'asse ottico; campionare un cono di raggi
 // se conta l'apertura della camera.
 // ----------------------------------------------------------------------------
 
@@ -371,42 +363,67 @@ static bool is_scene_occluding(
   return false;
 }
 
-static bool is_arm_occluding(
-  const moveit::core::RobotState & state,
-  const moveit::core::JointModelGroup * jmg,
-  const std::string & ee_link,
-  const Eigen::Vector3d & center,
-  double threshold_rad)
+// ----------------------------------------------------------------------------
+// Platform visibility (the arm must not hide the platform)
+// ----------------------------------------------------------------------------
+// The photo must show the whole platform disk, not only the object in the
+// middle: QR codes are applied all around its circumference, on top and below.
+// Sight lines go from the camera (TCP) to the disk center and to 24 points on
+// the disk rim. Each line is a thin cylinder in a separate collision world, and
+// the real collision meshes of the arm are checked against it: the link bodies
+// are offset from the line through the joint origins (0.136 m on the UR5 upper
+// arm), so a skeleton of joint origins would miss them. The end-effector links
+// carry the camera and are ignored (see make_sight_scene).
+
+// Collision world that only holds the sight lines ("sight" object).
+static planning_scene::PlanningScenePtr make_sight_scene(const moveit::core::RobotModelConstPtr & model)
 {
-  Eigen::Vector3d tcp_pos  = state.getGlobalLinkTransform(ee_link).translation();
-  Eigen::Vector3d view_dir = (center - tcp_pos).normalized();
-  double dist_to_center    = (center - tcp_pos).norm();
-
-  // Skeleton: origin of the child link of every active joint, in chain order.
-  std::vector<Eigen::Vector3d> skeleton;
-  for (const auto * joint : jmg->getActiveJointModels()) {
-    skeleton.push_back(state.getGlobalLinkTransform(joint->getChildLinkModel()).translation());
+  auto sight_scene = std::make_shared<planning_scene::PlanningScene>(model);
+  collision_detection::AllowedCollisionMatrix & acm = sight_scene->getAllowedCollisionMatrixNonConst();
+  for (const std::string & link : model->getLinkModelNamesWithCollisionGeometry()) {
+    if (link.find("ee_automata") != std::string::npos) acm.setEntry("sight", link, true);
   }
+  return sight_scene;
+}
 
-  const int samples = 5;   // points per segment, both ends included
-  for (size_t i = 0; i + 1 < skeleton.size(); ++i) {
-    for (int k = 0; k < samples; ++k) {
-      double t = static_cast<double>(k) / (samples - 1);
-      Eigen::Vector3d point = skeleton[i] + t * (skeleton[i + 1] - skeleton[i]);
-      Eigen::Vector3d to_point = point - tcp_pos;
-      double dist = to_point.norm();
-      if (dist < 0.01) continue;
-
-      double cos_angle = view_dir.dot(to_point / dist);
-      double angle = std::acos(std::clamp(cos_angle, -1.0, 1.0));
-
-      // Point is inside the view cone AND closer than the center (i.e. in the way)
-      if (angle < threshold_rad && dist < dist_to_center) {
-        return true;
-      }
+// Puts the sight lines from `camera` to the disk (center + rim) in the sight world.
+static void set_sight_lines(planning_scene::PlanningScene & sight_scene,
+                            const Eigen::Vector3d & camera, const Eigen::Vector3d & center,
+                            double disk_radius, double margin)
+{
+  const int rim_points = 24;
+  const double skip_near_camera = 0.02;   // m: the first 2 cm are inside the camera housing
+  std::vector<shapes::ShapeConstPtr> lines;
+  EigenSTL::vector_Isometry3d poses;
+  for (int k = -1; k < rim_points; ++k) {   // k = -1: the disk center
+    Eigen::Vector3d target = center;
+    if (k >= 0) {
+      double angle = 2.0 * M_PI * k / rim_points;
+      target += disk_radius * Eigen::Vector3d(std::cos(angle), std::sin(angle), 0.0);
     }
+    Eigen::Vector3d dir = target - camera;
+    double length = dir.norm() - skip_near_camera;
+    if (length < 0.01) continue;
+    dir.normalize();
+    lines.push_back(std::make_shared<shapes::Cylinder>(margin, length));
+    Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
+    pose.translation() = camera + dir * (skip_near_camera + length / 2.0);
+    pose.linear() = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d::UnitZ(), dir).toRotationMatrix();
+    poses.push_back(pose);
   }
-  return false;
+  collision_detection::WorldPtr world = sight_scene.getWorldNonConst();
+  world->removeObject("sight");
+  world->addToObject("sight", lines, poses);
+}
+
+// True if an arm link crosses one of the sight lines currently in the world.
+static bool is_platform_hidden(const planning_scene::PlanningScene & sight_scene,
+                               const moveit::core::RobotState & state)
+{
+  collision_detection::CollisionRequest req;
+  collision_detection::CollisionResult res;
+  sight_scene.getCollisionEnv()->checkRobotCollision(req, res, state, sight_scene.getAllowedCollisionMatrix());
+  return res.collision;
 }
 
 // ============================================================================
@@ -688,6 +705,90 @@ static std::vector<std::vector<double>> make_branch_seeds(
 }
 
 // ============================================================================
+// Arm swing measurement
+// ============================================================================
+// How far the elbow and the TCP travel in space during a motion. A segment
+// between two neighbouring waypoints moves the elbow by a few centimeters; a
+// big swing (branch change, OMPL detour) moves it by tens of centimeters.
+struct Sweep {
+  double elbow_m = 0.0;
+  double tcp_m = 0.0;
+};
+
+// One executed motion, for the final report.
+struct SegmentLog {
+  std::string what;      // "#12" = waypoint 12 (table numbering)
+  std::string planner;   // planner that produced the executed plan
+  Sweep sweep;
+};
+
+// Elbow and TCP path length along a list of joint configurations (group order).
+static Sweep sweep_of_path(const std::vector<std::vector<double>> & path,
+                           const moveit::core::RobotState & reference,
+                           const moveit::core::JointModelGroup * jmg,
+                           const std::string & elbow_link,
+                           const std::string & ee_link)
+{
+  Sweep sweep;
+  moveit::core::RobotState st(reference);
+  Eigen::Vector3d prev_elbow, prev_tcp;
+  for (size_t k = 0; k < path.size(); ++k) {
+    st.setJointGroupPositions(jmg, path[k]);
+    st.update();
+    Eigen::Vector3d elbow = st.getGlobalLinkTransform(elbow_link).translation();
+    Eigen::Vector3d tcp   = st.getGlobalLinkTransform(ee_link).translation();
+    if (k > 0) {
+      sweep.elbow_m += (elbow - prev_elbow).norm();
+      sweep.tcp_m   += (tcp - prev_tcp).norm();
+    }
+    prev_elbow = elbow;
+    prev_tcp   = tcp;
+  }
+  return sweep;
+}
+
+// Points of the straight line in joint space from a to b (the path Pilz PTP
+// follows), one sample every ~3 degrees on the joint that moves the most.
+static std::vector<std::vector<double>> joint_line(const std::vector<double> & a,
+                                                   const std::vector<double> & b)
+{
+  double max_diff = 0.0;
+  for (size_t k = 0; k < a.size() && k < b.size(); ++k) {
+    max_diff = std::max(max_diff, std::abs(a[k] - b[k]));
+  }
+  int steps = std::max(1, static_cast<int>(std::ceil(max_diff / 0.05)));
+  std::vector<std::vector<double>> path;
+  for (int s = 0; s <= steps; ++s) {
+    double t = static_cast<double>(s) / steps;
+    std::vector<double> q(a.size());
+    for (size_t k = 0; k < a.size(); ++k) q[k] = a[k] + t * (b[k] - a[k]);
+    path.push_back(q);
+  }
+  return path;
+}
+
+// Points of a planned trajectory, converted to the joint order of the group
+// (the trajectory may list the joints in a different order).
+static std::vector<std::vector<double>> trajectory_path(
+  const moveit::planning_interface::MoveGroupInterface::Plan & plan,
+  const moveit::core::RobotState & reference,
+  const moveit::core::JointModelGroup * jmg)
+{
+  std::vector<std::vector<double>> path;
+  moveit::core::RobotState st(reference);
+  const auto & jt = plan.trajectory.joint_trajectory;
+  for (const auto & point : jt.points) {
+    if (point.positions.size() != jt.joint_names.size()) continue;
+    st.setVariablePositions(jt.joint_names, point.positions);
+    std::vector<double> q;
+    st.copyJointGroupPositions(jmg, q);
+    path.push_back(q);
+  }
+  return path;
+}
+
+
+// ============================================================================
 // Planning scene locale (Step 1)
 // ============================================================================
 // Copia locale della planning scene di move_group (oggetti del mondo + matrice
@@ -832,7 +933,7 @@ static std::string plan_error_name(int code)
 // l'arco con l'IK, seme = campione precedente, e puo' finire su un ramo IK
 // diverso da quello scelto dalla DP. In quel caso il tratto successivo
 // partirebbe da uno stato non previsto, quindi il piano va scartato.
-// ponytail: soglia fissa a 0.01 rad, i rami IK distano decimi di radiante;
+// Known limit: soglia fissa a 0.01 rad, i rami IK distano decimi di radiante;
 // portarla in configurazione solo se comparissero scarti ingiustificati.
 static bool trajectory_ends_at_target(
   const moveit::planning_interface::MoveGroupInterface::Plan & plan,
@@ -874,12 +975,14 @@ static bool trajectory_ends_at_target(
 // `allow_circ` = false salta Pilz CIRC: senza uno start gia' sulla sfera di
 // scansione i due estremi dell'arco hanno raggi diversi e CIRC fallisce sempre
 // (e' il caso di home e delle pose di recovery).
+// `used_label` (optional) receives the label of the planner that succeeded.
 static bool plan_with_fallback(
   moveit::planning_interface::MoveGroupInterface & move_group,
   moveit::planning_interface::MoveGroupInterface::Plan & plan,
   const PlannerSetup & planners,
   bool allow_circ,
-  const rclcpp::Logger & logger)
+  const rclcpp::Logger & logger,
+  std::string * used_label = nullptr)
 {
   for (const PlannerChoice & choice : planners.chain) {
     if (choice.is_circ && !allow_circ) continue;
@@ -906,6 +1009,7 @@ static bool plan_with_fallback(
     }
 
     ++g_planner_hits[choice.label()];
+    if (used_label) *used_label = choice.label();
     return true;
   }
   return false;
@@ -1033,7 +1137,10 @@ int main(int argc, char ** argv)
   node->declare_parameter<bool>       ("scan_stagger_rings",                false);
   node->declare_parameter<bool>       ("scan_adaptive_rings",               false);
   node->declare_parameter<bool>       ("scan_occlusion_check",              false);
-  node->declare_parameter<double>     ("scan_occlusion_threshold_deg",      20.0);
+  // Platform visibility check: disk radius (m) and thickness of the sight lines
+  // (m, i.e. how close an arm link may come to a line of sight).
+  node->declare_parameter<double>     ("scan_occlusion_disk_radius",        0.15);
+  node->declare_parameter<double>     ("scan_occlusion_margin",             0.01);
   node->declare_parameter<bool>       ("scan_fallback_search",              false);
   node->declare_parameter<double>     ("scan_fallback_radius_mm",           20.0);
   node->declare_parameter<double>     ("scan_fallback_planning_time",        3.0);
@@ -1050,6 +1157,17 @@ int main(int argc, char ** argv)
   node->declare_parameter<double>     ("scan_enum_ik_timeout",         0.003);
   node->declare_parameter<double>     ("scan_planning_time",           5.0);
   node->declare_parameter<int>        ("scan_planning_attempts",       1);
+  // Sectors per hemisphere (0 = classic ring-by-ring order). See order_by_sectors().
+  node->declare_parameter<int>        ("scan_sectors",                 0);
+  // Rotation of the sectors (deg, counterclockwise seen from above): 0 = sector 0
+  // centered on the robot side, 45 = boundaries on the robot -> center axis.
+  node->declare_parameter<double>     ("scan_sector_offset_deg",       0.0);
+  // DP segment cost = elbow path + TCP path (m) + this weight x joint distance (rad).
+  node->declare_parameter<double>     ("scan_joint_cost_weight",       0.1);
+  // A motion counts as an arm swing when the elbow travels more than this (m).
+  node->declare_parameter<double>     ("scan_swing_threshold_m",       0.25);
+  // true: stop after the sequence planning, print the forecast and do not move.
+  node->declare_parameter<bool>       ("dry_run",                      false);
 
   const std::string global_frame    = node->get_parameter("global_frame").as_string();
   const std::string planning_group  = node->get_parameter("planning_group").as_string();
@@ -1071,8 +1189,8 @@ int main(int argc, char ** argv)
   const bool        stagger_rings           = node->get_parameter("scan_stagger_rings").as_bool();
   const bool        adaptive_rings          = node->get_parameter("scan_adaptive_rings").as_bool();
   const bool        occlusion_check         = node->get_parameter("scan_occlusion_check").as_bool();
-  const double      occlusion_threshold_rad =
-    node->get_parameter("scan_occlusion_threshold_deg").as_double() * M_PI / 180.0;
+  const double      occlusion_disk_radius   = node->get_parameter("scan_occlusion_disk_radius").as_double();
+  const double      occlusion_margin        = node->get_parameter("scan_occlusion_margin").as_double();
   const bool        fallback_search     = node->get_parameter("scan_fallback_search").as_bool();
   const double      fallback_radius_mm  = node->get_parameter("scan_fallback_radius_mm").as_double();
   const std::vector<std::string> planner_names = node->get_parameter("scan_planners").as_string_array();
@@ -1083,6 +1201,11 @@ int main(int argc, char ** argv)
   const double      enum_ik_timeout = node->get_parameter("scan_enum_ik_timeout").as_double();
   const double      planning_time   = node->get_parameter("scan_planning_time").as_double();
   const int         planning_attempts = node->get_parameter("scan_planning_attempts").as_int();
+  const int         num_sectors       = node->get_parameter("scan_sectors").as_int();
+  const double      sector_offset_deg = node->get_parameter("scan_sector_offset_deg").as_double();
+  const double      joint_cost_weight = node->get_parameter("scan_joint_cost_weight").as_double();
+  const double      swing_threshold   = node->get_parameter("scan_swing_threshold_m").as_double();
+  const bool        dry_run           = node->get_parameter("dry_run").as_bool();
 
   if (center_vec.size() != 3) {
     std::fprintf(stderr, "scan_center must have exactly 3 values (x, y, z).\n");
@@ -1129,28 +1252,18 @@ int main(int argc, char ** argv)
   // In modalita' FULL li generiamo come due chiamate separate (upper + lower) e
   // teniamo l'indice di confine: da li' in poi cambiano la pose di recovery e
   // il check di occlusione. La transizione vera e propria la decide la DP.
-  std::vector<geometry_msgs::msg::Pose> waypoints;
-  size_t lower_start_index = 0;  // 0 = nessuna transizione (upper-only o lower-only)
+  // The visit order (classic or by sectors) is built after the MoveIt setup,
+  // because the sectors are oriented on the position of the robot base.
+  std::vector<geometry_msgs::msg::Pose> upper_pts, lower_pts;
   if (cfg.hemisphere == HEMISPHERE_FULL) {
     ScanConfig cfg_upper = cfg; cfg_upper.hemisphere = HEMISPHERE_UPPER;
     ScanConfig cfg_lower = cfg; cfg_lower.hemisphere = HEMISPHERE_LOWER;
-    auto upper_pts = generate_waypoints(cfg_upper);
-    auto lower_pts = generate_waypoints(cfg_lower);
-    lower_start_index = upper_pts.size();
-    waypoints.reserve(upper_pts.size() + lower_pts.size());
-    waypoints.insert(waypoints.end(), upper_pts.begin(), upper_pts.end());
-    waypoints.insert(waypoints.end(), lower_pts.begin(), lower_pts.end());
+    upper_pts = generate_waypoints(cfg_upper);
+    lower_pts = generate_waypoints(cfg_lower);
+  } else if (cfg.hemisphere == HEMISPHERE_UPPER) {
+    upper_pts = generate_waypoints(cfg);
   } else {
-    waypoints = generate_waypoints(cfg);
-  }
-
-  // Build the table state (one row per waypoint, all PENDING)
-  std::vector<WpRow> rows;
-  rows.reserve(waypoints.size());
-  for (const auto & p : waypoints) {
-    WpRow r;
-    r.target = p;
-    rows.push_back(r);
+    lower_pts = generate_waypoints(cfg);
   }
 
   // --- Background spinner (MoveGroupInterface needs the node spinning) ---
@@ -1158,21 +1271,9 @@ int main(int argc, char ** argv)
   executor.add_node(node);
   std::thread spinner([&executor]() { executor.spin(); });
 
-  // --- Marker publisher unificato + initial gray markers ---
   // Un solo topic con un solo MarkerArray. I due marker per waypoint (sphere + arrow)
   // sono distinguibili dal namespace e occupano posizioni consecutive nell'array.
   auto markers_pub = node->create_publisher<MarkerArray>("/scan_waypoints_markers", 10);
-
-  MarkerArray markers_array;
-  markers_array.markers.reserve(2 * waypoints.size());
-  for (size_t i = 0; i < waypoints.size(); ++i) {
-    markers_array.markers.push_back(make_sphere_marker(static_cast<int>(i), waypoints[i], global_frame, COLOR_GRAY));
-    markers_array.markers.push_back(make_arrow_marker( static_cast<int>(i), waypoints[i], cfg.center, global_frame, COLOR_GRAY));
-  }
-  for (int attempt = 0; attempt < 5; ++attempt) {
-    publish_markers(markers_pub, markers_array);
-    rclcpp::sleep_for(std::chrono::milliseconds(200));
-  }
 
   // Pre-compute the pitch sampling sequence (used only when lock_pitch=false).
   const std::vector<double> pitch_offsets = build_pitch_offsets_rad(pitch_range_deg, pitch_step_deg);
@@ -1210,6 +1311,9 @@ int main(int argc, char ** argv)
     return 1;
   }
   planners.circ_center = make_circ_center_constraint(global_frame, ee_link, cfg.center);
+  // Set-back paths (see FASE 2) use straight joint-space motions only.
+  PlannerSetup ptp_only;
+  ptp_only.chain.push_back(PlannerChoice{"pilz_industrial_motion_planner", "PTP"});
 
   std::string planner_label;
   for (size_t k = 0; k < planners.chain.size(); ++k) {
@@ -1222,6 +1326,48 @@ int main(int argc, char ** argv)
     fetch_planning_scene(node, move_group.getRobotModel(), logger);
 
   // (lo spinner che processa anche i service /start e /pause e' gia' attivo, vedi sopra)
+
+  // --- Visit order ---
+  // Classic: upper hemisphere ring by ring, then the lower one. With
+  // `sectors` > 0 every hemisphere is visited sector by sector (see
+  // order_by_sectors).
+  std::vector<geometry_msgs::msg::Pose> waypoints;
+  std::vector<SectorBlock> blocks;
+  if (num_sectors > 0) {
+    Eigen::Vector3d base_pos =
+      move_group.getCurrentState()->getGlobalLinkTransform("base_link").translation();
+    double phi_front = std::atan2(base_pos.y() - cfg.center.y(), base_pos.x() - cfg.center.x())
+                     + sector_offset_deg * M_PI / 180.0;
+    order_by_sectors(upper_pts, cfg.center, phi_front, num_sectors, true,  waypoints, blocks);
+    order_by_sectors(lower_pts, cfg.center, phi_front, num_sectors, false, waypoints, blocks);
+  } else {
+    waypoints.insert(waypoints.end(), upper_pts.begin(), upper_pts.end());
+    waypoints.insert(waypoints.end(), lower_pts.begin(), lower_pts.end());
+  }
+  // Upper points always come first, so the boundary is the number of upper points.
+  size_t lower_start_index = 0;  // 0 = nessuna transizione (upper-only o lower-only)
+  if (cfg.hemisphere == HEMISPHERE_FULL) lower_start_index = upper_pts.size();
+
+  // Build the table state (one row per waypoint, all PENDING)
+  std::vector<WpRow> rows;
+  rows.reserve(waypoints.size());
+  for (const auto & p : waypoints) {
+    WpRow r;
+    r.target = p;
+    rows.push_back(r);
+  }
+
+  // --- Initial gray markers ---
+  MarkerArray markers_array;
+  markers_array.markers.reserve(2 * waypoints.size());
+  for (size_t i = 0; i < waypoints.size(); ++i) {
+    markers_array.markers.push_back(make_sphere_marker(static_cast<int>(i), waypoints[i], global_frame, COLOR_GRAY));
+    markers_array.markers.push_back(make_arrow_marker( static_cast<int>(i), waypoints[i], cfg.center, global_frame, COLOR_GRAY));
+  }
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    publish_markers(markers_pub, markers_array);
+    rclcpp::sleep_for(std::chrono::milliseconds(200));
+  }
 
   int successes      = 0;
   int failures       = 0;
@@ -1236,19 +1382,30 @@ int main(int argc, char ** argv)
 
   // Filtro comune dei candidati IK:
   //   1) collisione con la scena / auto-collisione (planning scene locale)
-  //   2) occlusione camera->centro (solo emisfero inferiore)
+  //   2) the arm hides part of the platform disk from the camera (both hemispheres)
   // Ritorna true se il candidato e' accettabile.
   int collision_rejects = 0;
   int occlusion_rejects = 0;
   int scene_occluded    = 0;   // waypoint scartati: oggetto della scena fra camera e centro
   const auto * jmg = move_group.getRobotModel()->getJointModelGroup(planning_group);
-  auto candidate_ok = [&](const moveit::core::RobotState & st, size_t wp_index) -> bool {
+  // Sight lines depend only on the camera position: they are rebuilt when the
+  // TCP moves (a new waypoint or a fallback point), not for every pitch.
+  planning_scene::PlanningScenePtr sight_scene = make_sight_scene(move_group.getRobotModel());
+  Eigen::Vector3d sight_camera(1e9, 1e9, 1e9);
+  auto platform_hidden = [&](const moveit::core::RobotState & st) -> bool {
+    Eigen::Vector3d camera = st.getGlobalLinkTransform(ee_link).translation();
+    if ((camera - sight_camera).norm() > 1e-3) {
+      set_sight_lines(*sight_scene, camera, cfg.center, occlusion_disk_radius, occlusion_margin);
+      sight_camera = camera;
+    }
+    return is_platform_hidden(*sight_scene, st);
+  };
+  auto candidate_ok = [&](const moveit::core::RobotState & st, size_t /*wp_index*/) -> bool {
     if (scene && scene->isStateColliding(st, planning_group)) {
       ++collision_rejects;
       return false;
     }
-    if (occlusion_check && lower_start_index > 0 && wp_index >= lower_start_index &&
-        is_arm_occluding(st, jmg, ee_link, cfg.center, occlusion_threshold_rad)) {
+    if (occlusion_check && platform_hidden(st)) {
       ++occlusion_rejects;
       return false;
     }
@@ -1352,9 +1509,14 @@ int main(int argc, char ** argv)
     // Vicino al limite dell'inviluppo (braccio quasi disteso) il solver
     // numerico puo' non trovare in 3 ms soluzioni che esistono: prima di
     // dichiarare il punto irraggiungibile ritento con un timeout 20x.
+    // The retry also starts from the 8 branches of the start pose: the
+    // solutions of the previous waypoint may all lead to colliding branches
+    // (it happened with the sector order, on the far side near the reach limit).
     const double slow_ik_timeout = enum_ik_timeout * 20.0;
+    std::vector<std::vector<double>> retry_seeds = seeds;
+    if (!prev_seeds.empty()) retry_seeds.insert(retry_seeds.end(), home_seeds.begin(), home_seeds.end());
     if (layers[i].empty()) {
-      enumerate_pose(waypoints[i], i, false, seeds, enum_pitch_offsets, layers[i], slow_ik_timeout);
+      enumerate_pose(waypoints[i], i, false, retry_seeds, enum_pitch_offsets, layers[i], slow_ik_timeout);
     }
 
     if (layers[i].empty() && fallback_search) {
@@ -1378,7 +1540,7 @@ int main(int argc, char ** argv)
           Eigen::Vector3d cand_pos = cfg.center + cfg.radius * new_radial;
           std::string hit_object;
           if (scene && is_scene_occluding(*scene, cand_pos, cfg.center, hit_object)) continue;
-          enumerate_pose(make_lookat(cand_pos, cfg.center), i, true, seeds, fb_pitch_offsets, layers[i], slow_ik_timeout);
+          enumerate_pose(make_lookat(cand_pos, cfg.center), i, true, retry_seeds, fb_pitch_offsets, layers[i], slow_ik_timeout);
         }
       }
     }
@@ -1399,7 +1561,7 @@ int main(int argc, char ** argv)
         pose_try.orientation.x = q_try.x();
         pose_try.orientation.y = q_try.y();
         pose_try.orientation.z = q_try.z();
-        for (const auto & seed : seeds) {
+        for (const auto & seed : retry_seeds) {
           moveit::core::RobotState cand(work_state);
           cand.setJointGroupPositions(jmg, seed);
           cand.enforceBounds();
@@ -1421,8 +1583,7 @@ int main(int argc, char ** argv)
               continue;
             }
           }
-          if (occlusion_check && lower_start_index > 0 && i >= lower_start_index &&
-              is_arm_occluding(cand, jmg, ee_link, cfg.center, occlusion_threshold_rad)) {
+          if (occlusion_check && platform_hidden(cand)) {
             ++occluded;
           }
         }
@@ -1446,6 +1607,7 @@ int main(int argc, char ** argv)
                 layers[i].empty() ? "  <-- IRRAGGIUNGIBILE" : "", elapsed);
     std::fflush(stdout);
   }
+
   const double enum_seconds =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - enum_t0).count();
 
@@ -1462,6 +1624,36 @@ int main(int argc, char ** argv)
       dp_layers[i].push_back(sc);
     }
   }
+
+  // Link whose origin sits on the elbow joint: its path measures the swings.
+  std::string elbow_link = ee_link;
+  if (ur_idx.elbow >= 0) {
+    elbow_link = jmg->getActiveJointModels()[ur_idx.elbow]->getChildLinkModel()->getName();
+  }
+
+  // Segment cost of the DP: what we want to keep small is how far the arm
+  // travels in space, so the cost is the elbow path plus the TCP path along
+  // the straight joint-space line (the path of Pilz PTP), computed with
+  // forward kinematics. The small joint term keeps big wrist spins from being
+  // free (they do not move the elbow, but they take time). Every segment is
+  // computed once and cached: the DP runs many times on the same segments.
+  std::map<std::tuple<int, int, int, int>, double> edge_cost_cache;
+  auto layer_joints = [&](int layer, int c) -> const std::vector<double> & {
+    if (layer < 0) return start_joints;
+    return dp_layers[layer][c].joints;
+  };
+  SeqCost dp_cost;
+  dp_cost.edge_cost = [&](int prev_layer, int prev_c, int layer, int c) -> double {
+    auto key = std::make_tuple(prev_layer, prev_c, layer, c);
+    auto it = edge_cost_cache.find(key);
+    if (it != edge_cost_cache.end()) return it->second;
+    const std::vector<double> & a = layer_joints(prev_layer, prev_c);
+    const std::vector<double> & b = layer_joints(layer, c);
+    Sweep sw = sweep_of_path(joint_line(a, b), work_state, jmg, elbow_link, ee_link);
+    double cost = sw.elbow_m + sw.tcp_m + joint_cost_weight * joint_l2(a, b);
+    edge_cost_cache[key] = cost;
+    return cost;
+  };
   // Validazione lazy dei tratti. Controllare tutti gli archi costerebbe minuti;
   // si controllano solo quelli della catena scelta (retta in joint space, come
   // Pilz PTP): i tratti che attraversano un ostacolo vengono penalizzati e la
@@ -1506,7 +1698,7 @@ int main(int argc, char ** argv)
   int dp_iterations = 0;
   auto dp_t0 = std::chrono::steady_clock::now();
   for (int iter = 0; iter < 200; ++iter) {
-    seq = choose_sequence(start_joints, dp_layers, edge_ok);
+    seq = choose_sequence(start_joints, dp_layers, edge_ok, dp_cost);
     ++dp_iterations;
 
     const size_t cache_before = edge_cache.size();
@@ -1514,23 +1706,30 @@ int main(int argc, char ** argv)
     int prev_layer = -1;
     int prev_c = 0;
     const std::vector<double> * prev_joints = &start_joints;
-    for (size_t i = 0; i < waypoints.size(); ++i) {
-      if (seq.chosen[i] < 0) continue;
-      const int c = seq.chosen[i];
-      if (!check_edge(prev_layer, prev_c, static_cast<int>(i), c, *prev_joints, layers[i][c].joints)) {
+    for (size_t k = 0; k < dp_layers.size(); ++k) {
+      if (seq.chosen[k] < 0) continue;
+      const int c = seq.chosen[k];
+      if (!check_edge(prev_layer, prev_c, static_cast<int>(k), c, *prev_joints, dp_layers[k][c].joints)) {
         ++new_blocked;
-        // Tratto bloccato: controllo subito anche gli altri candidati di questo
-        // layer dallo stesso punto di partenza, cosi' alla prossima iterazione
-        // la DP sa gia' quali alternative sono libere invece di provarle una
-        // per volta.
-        for (size_t c2 = 0; c2 < layers[i].size(); ++c2) {
-          check_edge(prev_layer, prev_c, static_cast<int>(i), static_cast<int>(c2),
-                     *prev_joints, layers[i][c2].joints);
+        // Blocked segment: check right away EVERY pair of candidates between
+        // the previous layer and this one, so at the next iteration the DP
+        // already knows all the free ways between these two waypoints. Checking
+        // only the pairs from the chosen predecessor made the DP discover them
+        // one per iteration and hit the iteration limit with blocked segments
+        // left on the chain (they then went to OMPL).
+        const size_t prev_count = (prev_layer < 0) ? 1 : dp_layers[prev_layer].size();
+        for (size_t p2 = 0; p2 < prev_count; ++p2) {
+          const std::vector<double> & a =
+            (prev_layer < 0) ? start_joints : dp_layers[prev_layer][p2].joints;
+          for (size_t c2 = 0; c2 < dp_layers[k].size(); ++c2) {
+            check_edge(prev_layer, static_cast<int>(p2), static_cast<int>(k), static_cast<int>(c2),
+                       a, dp_layers[k][c2].joints);
+          }
         }
       }
-      prev_layer  = static_cast<int>(i);
+      prev_layer  = static_cast<int>(k);
       prev_c      = c;
-      prev_joints = &layers[i][c].joints;
+      prev_joints = &dp_layers[k][c].joints;
     }
     std::printf("  DP iterazione %d: %d tratti in collisione sulla catena (%zu tratti controllati finora)\n",
                 iter + 1, new_blocked, edge_cache.size());
@@ -1552,9 +1751,226 @@ int main(int argc, char ** argv)
   const double dp_seconds =
     std::chrono::duration<double>(std::chrono::steady_clock::now() - dp_t0).count();
 
+  const std::vector<int> & chosen_wp = seq.chosen;   // chosen candidate per waypoint, -1 = none
+  auto layer_name = [&](size_t k) { return "#" + std::to_string(k); };
+
+  // Set-back path for the blocked segments of the chain. A segment A -> B is
+  // blocked when its straight joint-space line collides (usually under the
+  // platform, near the stem): instead of OMPL, the camera backs away from the
+  // sphere (A -> A'), moves (A' -> B') and comes back (B' -> B), three short
+  // PTP motions away from the crowded area. A' and B' are solved with the IK
+  // seeded from A and B, so the arm keeps its configuration. Directions: along
+  // the radius, or horizontally away from the platform axis (along the radius
+  // the lower hemisphere backs down toward the table). Distances 10, 15, 5 cm.
+  // OMPL stays for the segments that have no free set-back path; for those the
+  // forecast lists why every attempt failed.
+  struct SetBack {
+    bool found = false;
+    int from_wp = -1;             // waypoint the segment starts from
+    double distance = 0.0;        // m
+    std::vector<double> out_q;    // A': set back from the previous waypoint
+    std::vector<double> in_q;     // B': set back from this waypoint
+    std::string why_not;          // when not found: the failure of every attempt
+  };
+  std::vector<SetBack> set_back(waypoints.size());
+  const double set_back_ik_timeout = enum_ik_timeout * 20.0;
+  // Returns "" when the set-back configuration is valid, otherwise the reason.
+  auto set_back_config = [&](const std::vector<double> & q, double distance, bool horizontal,
+                             std::vector<double> & out) -> std::string {
+    moveit::core::RobotState st(work_state);
+    st.setJointGroupPositions(jmg, q);
+    st.update();
+    Eigen::Isometry3d pose = st.getGlobalLinkTransform(ee_link);
+    Eigen::Vector3d dir = pose.translation() - cfg.center;
+    if (horizontal) dir.z() = 0.0;
+    if (dir.norm() < 1e-3) return "direzione";   // pole: no horizontal direction
+    pose.translation() += distance * dir.normalized();
+    if (!st.setFromIK(jmg, pose, ee_link, set_back_ik_timeout)) return "IK";
+    st.update();
+    if (scene && scene->isStateColliding(st, planning_group)) {
+      // Name the first contact, e.g. collisione[forearm_link/rightwall].
+      collision_detection::CollisionRequest req;
+      collision_detection::CollisionResult res;
+      req.contacts     = true;
+      req.max_contacts = 1;
+      req.group_name   = planning_group;
+      scene->checkCollision(req, res, st);
+      if (res.contacts.empty()) return "collisione";
+      const auto & pair = res.contacts.begin()->first;
+      return "collisione[" + pair.first + "/" + pair.second + "]";
+    }
+    st.copyJointGroupPositions(jmg, out);
+    // Same arm configuration: only a small adjustment of every joint.
+    for (size_t k = 0; k < out.size(); ++k) {
+      if (std::abs(out[k] - q[k]) > 0.6) return "giunti";
+    }
+    return "";
+  };
+  {
+    int prev_k = -1;
+    int prev_c = 0;
+    const double distances[3] = {0.10, 0.15, 0.05};
+    for (size_t k = 0; k < dp_layers.size(); ++k) {
+      if (chosen_wp[k] < 0) continue;
+      const int c = chosen_wp[k];
+      // Not from the start pose: it is not on the sphere.
+      if (prev_k >= 0 && !edge_ok(prev_k, prev_c, static_cast<int>(k), c)) {
+        const std::vector<double> & qa = dp_layers[prev_k][prev_c].joints;
+        const std::vector<double> & qb = dp_layers[k][c].joints;
+        std::string why_not;
+        for (int horizontal = 0; horizontal < 2 && !set_back[k].found; ++horizontal) {
+          for (double d : distances) {
+            SetBack sb;
+            char attempt[24];
+            std::snprintf(attempt, sizeof(attempt), " %s%.0f:", horizontal ? "orizz" : "rad", d * 100.0);
+            std::string fail = set_back_config(qa, d, horizontal == 1, sb.out_q);
+            if (!fail.empty()) { why_not += attempt + fail + "(A')"; continue; }
+            fail = set_back_config(qb, d, horizontal == 1, sb.in_q);
+            if (!fail.empty()) { why_not += attempt + fail + "(B')"; continue; }
+            if (!segment_is_free(qa, sb.out_q))       { why_not += attempt + std::string("tratto A-A'"); continue; }
+            if (!segment_is_free(sb.out_q, sb.in_q))  { why_not += attempt + std::string("tratto A'-B'"); continue; }
+            if (!segment_is_free(sb.in_q, qb))        { why_not += attempt + std::string("tratto B'-B"); continue; }
+            sb.found = true;
+            sb.from_wp = prev_k;
+            sb.distance = horizontal ? -d : d;   // negative = horizontal (only for the report)
+            set_back[k] = sb;
+            break;
+          }
+        }
+        if (!set_back[k].found) set_back[k].why_not = why_not;
+      }
+      prev_k = static_cast<int>(k);
+      prev_c = c;
+    }
+  }
+  // The three straight joint-space segments of a set-back path, as one path.
+  auto set_back_path = [&](const std::vector<double> & qa, const SetBack & sb,
+                           const std::vector<double> & qb) {
+    std::vector<std::vector<double>> path = joint_line(qa, sb.out_q);
+    for (const auto & point : joint_line(sb.out_q, sb.in_q)) path.push_back(point);
+    for (const auto & point : joint_line(sb.in_q, qb)) path.push_back(point);
+    return path;
+  };
+
+  // Forecast on the chosen chain, before moving: segments as straight lines in
+  // joint space (the path of Pilz PTP), blocked segments through their set-back
+  // path. Blocked segments without one will go to OMPL, whose path is not
+  // known in advance, so they are only counted.
+  int forecast_swings = 0;
+  int forecast_blocked = 0;
+  int forecast_set_back = 0;
+  double forecast_elbow_m = 0.0;
+  std::vector<std::string> forecast_list;
+  {
+    int prev_k = -1;
+    int prev_c = 0;
+    const std::vector<double> * prev_q = &start_joints;
+    std::string prev_name = "start";
+    for (size_t k = 0; k < dp_layers.size(); ++k) {
+      if (seq.chosen[k] < 0) continue;
+      const int c = seq.chosen[k];
+      const std::vector<double> & q = dp_layers[k][c].joints;
+      char line[160];
+      if (!edge_ok(prev_k, prev_c, static_cast<int>(k), c) && set_back[k].found) {
+        ++forecast_blocked;
+        ++forecast_set_back;
+        Sweep sw = sweep_of_path(set_back_path(*prev_q, set_back[k], q), work_state, jmg, elbow_link, ee_link);
+        forecast_elbow_m += sw.elbow_m;
+        if (sw.elbow_m > swing_threshold) ++forecast_swings;
+        std::snprintf(line, sizeof(line), "  %-8s -> %-8s  retta bloccata: via arretrata %s di %.0f cm, gomito %.2f m  TCP %.2f m",
+                      prev_name.c_str(), layer_name(k).c_str(), set_back[k].distance < 0 ? "orizzontale" : "radiale",
+                      std::abs(set_back[k].distance) * 100.0, sw.elbow_m, sw.tcp_m);
+        forecast_list.push_back(line);
+      } else if (!edge_ok(prev_k, prev_c, static_cast<int>(k), c)) {
+        ++forecast_blocked;
+        std::snprintf(line, sizeof(line), "  %-8s -> %-8s  retta bloccata: andra' a OMPL",
+                      prev_name.c_str(), layer_name(k).c_str());
+        forecast_list.push_back(line + std::string("  (via arretrata:") + set_back[k].why_not + ")");
+      } else {
+        Sweep sw = sweep_of_path(joint_line(*prev_q, q), work_state, jmg, elbow_link, ee_link);
+        forecast_elbow_m += sw.elbow_m;
+        if (sw.elbow_m > swing_threshold) {
+          ++forecast_swings;
+          std::snprintf(line, sizeof(line), "  %-8s -> %-8s  gomito %.2f m  TCP %.2f m",
+                        prev_name.c_str(), layer_name(k).c_str(), sw.elbow_m, sw.tcp_m);
+          forecast_list.push_back(line);
+        }
+      }
+      prev_k = static_cast<int>(k);
+      prev_c = c;
+      prev_q = &q;
+      prev_name = layer_name(k);
+    }
+  }
+
+  // Arm envelope: the box that holds the origins of all the arm links (i) in
+  // every configuration the arm MUST be able to take (the chosen waypoint
+  // solutions, the start pose and the two recovery poses) and (ii) along the
+  // straight joint-space segments of the chain. Walls just outside box (i)
+  // cut none of the needed configurations but stop the arm from swinging out.
+  // Known limit: link origins only, the link bodies are covered by a fixed
+  // 0.10 m margin; use the collision meshes if the margin proves too tight.
+  const double wall_margin = 0.10;
+  Eigen::AlignedBox3d needed_box, segments_box;
+  auto extend_box = [&](const std::vector<double> & q, Eigen::AlignedBox3d & box) {
+    moveit::core::RobotState st(work_state);
+    st.setJointGroupPositions(jmg, q);
+    st.update();
+    for (const std::string & link : jmg->getLinkModelNames()) {
+      box.extend(st.getGlobalLinkTransform(link).translation());
+    }
+  };
+  {
+    extend_box(start_joints, needed_box);
+    const std::string recovery_poses[2] = {home_pose_name, lower_home_pose_name};
+    for (const std::string & name : recovery_poses) {
+      moveit::core::RobotState st(work_state);
+      if (!st.setToDefaultValues(jmg, name)) continue;
+      std::vector<double> q;
+      st.copyJointGroupPositions(jmg, q);
+      extend_box(q, needed_box);
+    }
+    int prev_k = -1;
+    int prev_c = 0;
+    const std::vector<double> * prev_q = &start_joints;
+    for (size_t k = 0; k < dp_layers.size(); ++k) {
+      if (chosen_wp[k] < 0) continue;
+      const int c = chosen_wp[k];
+      const std::vector<double> & q = dp_layers[k][c].joints;
+      extend_box(q, needed_box);
+      if (edge_ok(prev_k, prev_c, static_cast<int>(k), c)) {
+        for (const auto & point : joint_line(*prev_q, q)) extend_box(point, segments_box);
+      } else if (set_back[k].found) {
+        for (const auto & point : set_back_path(*prev_q, set_back[k], q)) extend_box(point, segments_box);
+      }
+      prev_k = static_cast<int>(k);
+      prev_c = c;
+      prev_q = &q;
+    }
+  }
+  auto print_envelope = [&]() {
+    if (needed_box.isEmpty()) return;
+    const Eigen::Vector3d lo = needed_box.min(), hi = needed_box.max();
+    std::printf("\n%sIngombro del braccio%s (origini dei link, frame %s):\n", ansi::BOLD, ansi::RESET,
+                global_frame.c_str());
+    std::printf("  configurazioni necessarie (waypoint scelti, start, %s, %s): x [%.3f, %.3f]  y [%.3f, %.3f]  z [%.3f, %.3f]\n",
+                home_pose_name.c_str(), lower_home_pose_name.c_str(),
+                lo.x(), hi.x(), lo.y(), hi.y(), lo.z(), hi.z());
+    if (!segments_box.isEmpty()) {
+      const Eigen::Vector3d slo = segments_box.min(), shi = segments_box.max();
+      std::printf("  lungo i tratti in retta della catena:                    x [%.3f, %.3f]  y [%.3f, %.3f]  z [%.3f, %.3f]\n",
+                  slo.x(), shi.x(), slo.y(), shi.y(), slo.z(), shi.z());
+    }
+    std::printf("  muri proposti (configurazioni necessarie + margine %.2f m), da mettere sotto scan: nel YAML:\n",
+                wall_margin);
+    std::printf("  walls:\n    back_y: %.2f\n    left_x: %.2f\n    right_x: %.2f\n    top_z: %.2f\n",
+                lo.y() - wall_margin, lo.x() - wall_margin, hi.x() + wall_margin, hi.z() + wall_margin);
+    std::fflush(stdout);
+  };
+
   size_t reachable = 0, via_fallback = 0;
   for (size_t i = 0; i < waypoints.size(); ++i) {
-    if (seq.chosen[i] < 0) {
+    if (chosen_wp[i] < 0) {
       if (rows[i].status != WpStatus::OCCLUDED) {   // gia' marcato in fase 1
         rows[i].status = WpStatus::UNREACHABLE;
         set_marker_color(markers_array, i, COLOR_RED);
@@ -1562,7 +1978,7 @@ int main(int argc, char ** argv)
       continue;
     }
     ++reachable;
-    const Candidate & c = layers[i][seq.chosen[i]];
+    const Candidate & c = layers[i][chosen_wp[i]];
     if (c.is_fallback) {
       ++via_fallback;
       rows[i].fallback     = c.pose;
@@ -1581,15 +1997,33 @@ int main(int argc, char ** argv)
   publish_markers(markers_pub, markers_array);
 
   {
-    char buf[384];
+    char buf[640];
     std::snprintf(buf, sizeof(buf),
       "Sequenza: %zu/%zu raggiungibili (%zu via fallback), %zu irraggiungibili, %d vista coperta | "
       "%zu candidati, %d scartati per collisione, %d per occlusione | costo DP %.1f, %zu tratti bloccati su %zu controllati, %d iter | "
-      "enumerazione %.1f s, DP %.1f s",
+      "enumerazione %.1f s, DP %.1f s\n"
+      "Previsione: %d sbracciate (gomito > %.2f m), gomito %.2f m in totale, %d tratti bloccati sulla catena (%d con via arretrata, %d -> OMPL) | "
+      "settori %d (offset %.0f gradi)",
       reachable, waypoints.size(), via_fallback, waypoints.size() - reachable - scene_occluded, scene_occluded,
       total_candidates, collision_rejects, occlusion_rejects, seq.total_cost, blocked_edges_total, edge_cache.size(),
-      dp_iterations, enum_seconds, dp_seconds);
+      dp_iterations, enum_seconds, dp_seconds,
+      forecast_swings, swing_threshold, forecast_elbow_m, forecast_blocked,
+      forecast_set_back, forecast_blocked - forecast_set_back,
+      num_sectors, sector_offset_deg);
     g_sequence_summary = buf;
+  }
+
+  // Dry run: print the forecast, then exit without moving.
+  // Used to compare configurations (sectors, cost, walls) in ~1 minute each.
+  if (dry_run) {
+    std::printf("\n%s\n", g_sequence_summary.c_str());
+    for (const std::string & line : forecast_list) std::printf("%s\n", line.c_str());
+    print_envelope();
+    std::printf("\ndry_run: nessun movimento eseguito.\n");
+    std::fflush(stdout);
+    rclcpp::shutdown();
+    spinner.join();
+    return 0;
   }
 
   // --- Interactive terminal: spacebar pause/resume + Q to quit ---
@@ -1611,6 +2045,12 @@ int main(int argc, char ** argv)
   // da li' Pilz CIRC puo' pianificare l'arco (start e goal allo stesso raggio).
   bool on_sphere = false;
 
+  // Every executed motion, with the elbow / TCP path, for the swing report.
+  std::vector<SegmentLog> segment_logs;
+  // Last waypoint reached with a normal motion, -1 after a recovery: a
+  // set-back path is used only when the arm is where it was computed from.
+  int last_reached = -1;
+
   for (size_t i = 0; i < waypoints.size(); ++i) {
     if (g_quit.load() || !rclcpp::ok()) break;
     wait_while_paused(rows, lock_pitch, planner_label);
@@ -1621,19 +2061,47 @@ int main(int argc, char ** argv)
       recovery_pose_name = lower_home_pose_name;
     }
 
-    if (seq.chosen[i] < 0) {   // gia' marcato OCCLUDED (fase 1) o UNREACHABLE (fase 2)
+    if (chosen_wp[i] < 0) {   // gia' marcato OCCLUDED (fase 1) o UNREACHABLE (fase 2)
       if (rows[i].status != WpStatus::OCCLUDED) {
         ++failures;
         ++ik_failures;
       }
       continue;
     }
-    const Candidate & chosen = layers[i][seq.chosen[i]];
+    const Candidate & chosen = layers[i][chosen_wp[i]];
 
     rows[i].status = WpStatus::RUNNING;
     set_marker_color(markers_array, i, COLOR_YELLOW);
     publish_markers(markers_pub, markers_array);
     render_table(rows, lock_pitch, planner_label);
+
+    // Blocked segment with a set-back path: back away from the sphere, move,
+    // come closer (PTP only). If a step fails the arm stays where it is and
+    // the normal planners below go on from there.
+    Sweep set_back_sweep;
+    bool set_back_used = false;
+    if (set_back[i].found && last_reached == set_back[i].from_wp) {
+      const std::vector<double> * steps[2] = {&set_back[i].out_q, &set_back[i].in_q};
+      for (const std::vector<double> * q : steps) {
+        moveit::core::RobotState target(work_state);
+        target.setJointGroupPositions(jmg, *q);
+        move_group.clearPathConstraints();
+        move_group.clearPoseTargets();
+        move_group.setJointValueTarget(target);
+        moveit::planning_interface::MoveGroupInterface::Plan step_plan;
+        if (!plan_with_fallback(move_group, step_plan, ptp_only, false, logger) ||
+            move_group.execute(step_plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+          RCLCPP_WARN(logger, "wp %zu: via arretrata interrotta, proseguo con i planner normali.", i);
+          break;
+        }
+        Sweep sw = sweep_of_path(trajectory_path(step_plan, work_state, jmg), work_state, jmg,
+                                 elbow_link, ee_link);
+        set_back_sweep.elbow_m += sw.elbow_m;
+        set_back_sweep.tcp_m   += sw.tcp_m;
+        set_back_used = true;
+      }
+      on_sphere = false;   // the set-back poses are off the scan sphere
+    }
 
     work_state.setJointGroupPositions(jmg, chosen.joints);
     move_group.clearPathConstraints();
@@ -1641,7 +2109,8 @@ int main(int argc, char ** argv)
     move_group.setJointValueTarget(work_state);
 
     moveit::planning_interface::MoveGroupInterface::Plan plan;
-    bool plan_ok = plan_with_fallback(move_group, plan, planners, on_sphere, logger);
+    std::string used_planner;
+    bool plan_ok = plan_with_fallback(move_group, plan, planners, on_sphere, logger, &used_planner);
 
     if (!plan_ok) {
       // Nessun percorso da dove siamo: passo dalla pose di recovery e riprovo
@@ -1661,10 +2130,11 @@ int main(int argc, char ** argv)
         break;
       }
       on_sphere = false;   // dopo la recovery il TCP non e' piu' su un waypoint
+      last_reached = -1;
       rows[i].status = WpStatus::RUNNING;
       render_table(rows, lock_pitch, planner_label);
       move_group.setJointValueTarget(work_state);
-      plan_ok = plan_with_fallback(move_group, plan, planners, on_sphere, logger);
+      plan_ok = plan_with_fallback(move_group, plan, planners, on_sphere, logger, &used_planner);
     }
 
     if (!plan_ok) {
@@ -1687,6 +2157,7 @@ int main(int argc, char ** argv)
       ++failures;
       ++exec_failures;
       on_sphere = false;   // fermo a meta' traiettoria: posizione non nota
+      last_reached = -1;
       rows[i].status = WpStatus::HOMING;
       set_marker_color(markers_array, i, COLOR_RED);
       publish_markers(markers_pub, markers_array);
@@ -1706,6 +2177,18 @@ int main(int argc, char ** argv)
     // Raggiunto
     ++successes;
     on_sphere = true;
+    last_reached = static_cast<int>(i);
+    {
+      // A set-back path counts as one motion together with the final approach.
+      SegmentLog seg;
+      seg.what    = "#" + std::to_string(i);
+      seg.planner = set_back_used ? "via arretrata + " + used_planner : used_planner;
+      seg.sweep   = sweep_of_path(trajectory_path(plan, work_state, jmg), work_state, jmg,
+                                  elbow_link, ee_link);
+      seg.sweep.elbow_m += set_back_sweep.elbow_m;
+      seg.sweep.tcp_m   += set_back_sweep.tcp_m;
+      segment_logs.push_back(seg);
+    }
     rows[i].status = chosen.is_fallback ? WpStatus::FALLBACK_ORIGIN : WpStatus::DONE;
 
     auto current = move_group.getCurrentPose(ee_link);
@@ -1758,6 +2241,23 @@ int main(int argc, char ** argv)
     ansi::BOLD, ansi::RESET, collision_rejects, occlusion_rejects);
   std::printf("\n%sTempo scansione:%s %.1f s (%.1f min)\n",
     ansi::BOLD, ansi::RESET, scan_duration_s, scan_duration_s / 60.0);
+
+  // Arm swings measured on the executed trajectories (recoveries excluded).
+  int swings = 0;
+  double elbow_total = 0.0, tcp_total = 0.0;
+  for (const SegmentLog & seg : segment_logs) {
+    elbow_total += seg.sweep.elbow_m;
+    tcp_total   += seg.sweep.tcp_m;
+    if (seg.sweep.elbow_m > swing_threshold) ++swings;
+  }
+  std::printf("%sSbracciate:%s %d tratti con il gomito oltre %.2f m | percorso gomito %.2f m, TCP %.2f m su %zu tratti\n",
+    ansi::BOLD, ansi::RESET, swings, swing_threshold, elbow_total, tcp_total, segment_logs.size());
+  for (const SegmentLog & seg : segment_logs) {
+    if (seg.sweep.elbow_m <= swing_threshold) continue;
+    std::printf("  sbracciata verso %-8s  gomito %.2f m  TCP %.2f m  (%s)\n",
+      seg.what.c_str(), seg.sweep.elbow_m, seg.sweep.tcp_m, seg.planner.c_str());
+  }
+  print_envelope();
   std::fflush(stdout);
 
   // Cleanup
