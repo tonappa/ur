@@ -1,13 +1,13 @@
-// scan_sequence_node: evoluzione di scan_executor_node (che resta come backup).
-// Differenze rispetto al nodo originale:
-//   Step 1: ogni candidato IK viene controllato contro la planning scene
-//           (collisioni con scena e auto-collisioni) PRIMA di chiamare plan().
-//   Step 2: catena di planner (Pilz CIRC -> Pilz PTP -> STOMP -> OMPL): ogni
-//           tratto prova i planner in ordine e si ferma al primo che riesce.
-//   Step 3: prima di muovere il robot si enumerano TUTTE le configurazioni
-//           valide di ogni waypoint (pitch x rami IK) e una programmazione
-//           dinamica a strati sceglie la sequenza con il percorso minimo nei
-//           giunti. I waypoint irraggiungibili si conoscono prima di partire.
+// scan_sequence_node: plans and executes the spherical scan (calibration run).
+//   FASE 1: waypoints on the sphere, in ring or sector order; for each one every
+//           valid IK configuration (pitch x IK branches) that collides with
+//           nothing and leaves the whole platform visible to the camera.
+//   FASE 2: a layered dynamic program (DP) picks one configuration per
+//           waypoint so that the elbow and the TCP travel as little as possible.
+//   FASE 3: execution, segment by segment, through the planner chain (Pilz PTP,
+//           then OMPL); with record:=true every executed motion is saved for
+//           scan_replay_node.
+// dry_run:=true stops after FASE 2 and prints the forecast and the arm envelope.
 
 #include <algorithm>
 #include <atomic>
@@ -17,7 +17,6 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
-#include <future>
 #include <limits>
 #include <map>
 #include <memory>
@@ -45,11 +44,8 @@
 #include <geometric_shapes/shapes.h>
 #include <geometric_shapes/bodies.h>
 #include <geometric_shapes/body_operations.h>
-#include <moveit_msgs/srv/get_planning_scene.hpp>
-#include <moveit_msgs/msg/planning_scene_components.hpp>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <moveit_msgs/msg/constraints.hpp>
-#include <moveit_msgs/msg/orientation_constraint.hpp>
 #include <moveit_msgs/msg/position_constraint.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
@@ -244,26 +240,6 @@ static std::vector<double> build_pitch_offsets_rad(double range_deg, double step
     offsets.push_back(-k);
   }
   return offsets;
-}
-
-// Distanza joint-space tra due RobotState sui giunti attivi del JointModelGroup.
-// L2 sulle differenze dei giunti rivoluti; differenze wrappate su [-π, π] così
-// un wrist flip da +179° a -179° conta 2°, non 358°.
-static double joint_distance(
-  const moveit::core::RobotState & a,
-  const moveit::core::RobotState & b,
-  const moveit::core::JointModelGroup * jmg)
-{
-  double sum = 0.0;
-  for (const auto * j : jmg->getActiveJointModels()) {
-    const double va = a.getJointPositions(j)[0];
-    const double vb = b.getJointPositions(j)[0];
-    double diff = va - vb;
-    while (diff >  M_PI) diff -= 2.0 * M_PI;
-    while (diff < -M_PI) diff += 2.0 * M_PI;
-    sum += diff * diff;
-  }
-  return std::sqrt(sum);
 }
 
 // ----------------------------------------------------------------------------
@@ -1125,8 +1101,6 @@ int main(int argc, char ** argv)
   node->declare_parameter<double>     ("scan_occlusion_margin",             0.01);
   node->declare_parameter<bool>       ("scan_fallback_search",              false);
   node->declare_parameter<double>     ("scan_fallback_radius_mm",           20.0);
-  node->declare_parameter<double>     ("scan_fallback_planning_time",        3.0);
-  node->declare_parameter<int>        ("scan_fallback_max_plan_attempts",    3);
   // Catena di planner, provati in ordine. Il default riproduce il comportamento
   // storico: retta in joint space, OMPL quando la retta collide.
   node->declare_parameter<std::vector<std::string>>("scan_planners",
@@ -1135,7 +1109,6 @@ int main(int argc, char ** argv)
   node->declare_parameter<double>     ("scan_pitch_search_range_deg", 90.0);
   node->declare_parameter<double>     ("scan_pitch_search_step_deg",  15.0);
   node->declare_parameter<double>     ("scan_pitch_xparallel_bias",    0.05);
-  node->declare_parameter<double>     ("scan_ik_timeout",              0.2);
   node->declare_parameter<double>     ("scan_enum_ik_timeout",         0.003);
   node->declare_parameter<double>     ("scan_planning_time",           5.0);
   node->declare_parameter<int>        ("scan_planning_attempts",       1);
@@ -1401,7 +1374,7 @@ int main(int argc, char ** argv)
     }
     return is_platform_hidden(*sight_scene, st);
   };
-  auto candidate_ok = [&](const moveit::core::RobotState & st, size_t /*wp_index*/) -> bool {
+  auto candidate_ok = [&](const moveit::core::RobotState & st) -> bool {
     if (scene && scene->isStateColliding(st, planning_group)) {
       ++collision_rejects;
       return false;
@@ -1434,7 +1407,7 @@ int main(int argc, char ** argv)
   // Per ogni pitch offset e per ogni seed chiama TRAC-IK (solve_type Speed:
   // converge sul ramo piu' vicino al seed), poi filtra per collisioni /
   // occlusione e scarta i duplicati.
-  auto enumerate_pose = [&](const geometry_msgs::msg::Pose & base_pose, size_t wp_index,
+  auto enumerate_pose = [&](const geometry_msgs::msg::Pose & base_pose,
                             bool is_fallback,
                             const std::vector<std::vector<double>> & seeds,
                             const std::vector<double> & pitch_list,
@@ -1458,7 +1431,7 @@ int main(int argc, char ** argv)
         cand.enforceBounds();
         if (!cand.setFromIK(jmg, pose_try, ee_link, ik_timeout_s)) continue;
         cand.update();
-        if (!candidate_ok(cand, wp_index)) continue;
+        if (!candidate_ok(cand)) continue;
 
         Candidate c;
         cand.copyJointGroupPositions(jmg, c.joints);
@@ -1505,7 +1478,7 @@ int main(int argc, char ** argv)
       }
     }
 
-    enumerate_pose(waypoints[i], i, false, seeds, enum_pitch_offsets, layers[i], enum_ik_timeout);
+    enumerate_pose(waypoints[i], false, seeds, enum_pitch_offsets, layers[i], enum_ik_timeout);
 
     // Vicino al limite dell'inviluppo (braccio quasi disteso) il solver
     // numerico puo' non trovare in 3 ms soluzioni che esistono: prima di
@@ -1517,7 +1490,7 @@ int main(int argc, char ** argv)
     std::vector<std::vector<double>> retry_seeds = seeds;
     if (!prev_seeds.empty()) retry_seeds.insert(retry_seeds.end(), home_seeds.begin(), home_seeds.end());
     if (layers[i].empty()) {
-      enumerate_pose(waypoints[i], i, false, retry_seeds, enum_pitch_offsets, layers[i], slow_ik_timeout);
+      enumerate_pose(waypoints[i], false, retry_seeds, enum_pitch_offsets, layers[i], slow_ik_timeout);
     }
 
     if (layers[i].empty() && fallback_search) {
@@ -1541,7 +1514,7 @@ int main(int argc, char ** argv)
           Eigen::Vector3d cand_pos = cfg.center + cfg.radius * new_radial;
           std::string hit_object;
           if (scene && is_scene_occluding(*scene, cand_pos, cfg.center, hit_object)) continue;
-          enumerate_pose(make_lookat(cand_pos, cfg.center), i, true, retry_seeds, fb_pitch_offsets, layers[i], slow_ik_timeout);
+          enumerate_pose(make_lookat(cand_pos, cfg.center), true, retry_seeds, fb_pitch_offsets, layers[i], slow_ik_timeout);
         }
       }
     }
