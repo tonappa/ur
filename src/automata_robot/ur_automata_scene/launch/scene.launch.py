@@ -48,6 +48,7 @@ def generate_launch_description():
             "wall_back_y": float(walls.get("back_y", 0.0)),
             "wall_left_x": float(walls.get("left_x", 0.0)),
             "wall_right_x": float(walls.get("right_x", 0.0)),
+            "wall_top_z": float(walls.get("top_z", 0.0)),
             "base_xyz": base_xyz,
             "base_rpy": base_rpy,
         }],

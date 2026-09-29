@@ -175,6 +175,16 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
       make_obj("backwall", backwall_shape, backwall_pos, identity_quat(),
                global_frame, stamp);
 
+  // Ceiling over the whole cell, from behind the robot to past the platform.
+  const bool use_ceiling = opt.wall_top_z != 0.0;
+  shape_msgs::msg::SolidPrimitive ceiling_shape;
+  ceiling_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
+  ceiling_shape.dimensions = {1.5, 2.0, 0.01};
+  Eigen::Vector3d ceiling_pos(0, 0.25, opt.wall_top_z);
+  moveit_msgs::msg::CollisionObject ceiling =
+      make_obj("ceiling", ceiling_shape, ceiling_pos, identity_quat(),
+               global_frame, stamp);
+
   // ---------------- Parete di montaggio (base non in origine) ----------------
   // Lastra 1.5 x 1.5 x 0.05 m perpendicolare all'asse Z della base, con la
   // faccia superiore 5 mm sotto il piano della flangia cosi' la base non la
@@ -380,6 +390,7 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   if (use_leftwall)  scene.world.collision_objects.push_back(leftwall);
   if (use_rightwall) scene.world.collision_objects.push_back(rightwall);
   if (use_backwall)  scene.world.collision_objects.push_back(backwall);
+  if (use_ceiling)   scene.world.collision_objects.push_back(ceiling);
   if (use_mountwall) scene.world.collision_objects.push_back(mountwall);
 
   // ---------------- Colors ----------------
@@ -406,6 +417,7 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   if (use_leftwall)  scene.object_colors.push_back(make_color("leftwall",  0.6f, 0.6f, 0.6f, 0.4f));
   if (use_rightwall) scene.object_colors.push_back(make_color("rightwall", 0.6f, 0.6f, 0.6f, 0.4f));
   if (use_backwall)  scene.object_colors.push_back(make_color("backwall",  0.6f, 0.6f, 0.6f, 0.4f));
+  if (use_ceiling)   scene.object_colors.push_back(make_color("ceiling",   0.6f, 0.6f, 0.6f, 0.25f));
   if (use_mountwall) scene.object_colors.push_back(make_color("mountwall", 0.6f, 0.6f, 0.6f, 0.4f));
 
   return scene;

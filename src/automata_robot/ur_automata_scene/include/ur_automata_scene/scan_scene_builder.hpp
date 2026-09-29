@@ -31,6 +31,8 @@ struct SceneOptions {
   double wall_back_y = 0.0;
   double wall_left_x = 0.0;
   double wall_right_x = 0.0;
+  // Ceiling: horizontal plate at this height (m), over the whole cell (0 = none).
+  double wall_top_z = 0.0;
 
   // Posa della base del robot nel frame globale (metri, radianti), la stessa
   // di robot.base_xyz / base_rpy nel YAML. Se diversa da zero, dietro la base

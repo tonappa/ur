@@ -39,6 +39,7 @@ public:
     declare_parameter<double>("wall_back_y", 0.0);
     declare_parameter<double>("wall_left_x", 0.0);
     declare_parameter<double>("wall_right_x", 0.0);
+    declare_parameter<double>("wall_top_z", 0.0);
     // Posa della base (robot.base_xyz / base_rpy): se non e' zero, parete di montaggio.
     declare_parameter<std::vector<double>>("base_xyz", std::vector<double>{0.0, 0.0, 0.0});
     declare_parameter<std::vector<double>>("base_rpy", std::vector<double>{0.0, 0.0, 0.0});
@@ -70,6 +71,7 @@ public:
     opt.wall_back_y     = get_parameter("wall_back_y").as_double();
     opt.wall_left_x     = get_parameter("wall_left_x").as_double();
     opt.wall_right_x    = get_parameter("wall_right_x").as_double();
+    opt.wall_top_z      = get_parameter("wall_top_z").as_double();
     std::vector<double> base_xyz = get_parameter("base_xyz").as_double_array();
     std::vector<double> base_rpy = get_parameter("base_rpy").as_double_array();
     if (base_xyz.size() != 3 || base_rpy.size() != 3) {
@@ -103,11 +105,11 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "Applying scene: %zu objects in frame '%s', center [%.3f, %.3f, %.3f], "
-      "margins platform %.3f / table %.3f m, walls back %.2f left %.2f right %.2f, "
+      "margins platform %.3f / table %.3f m, walls back %.2f left %.2f right %.2f top %.2f, "
       "base [%.3f, %.3f, %.3f] rpy [%.3f, %.3f, %.3f]%s",
       scene.world.collision_objects.size(), global_frame.c_str(),
       center.x(), center.y(), center.z(), opt.platform_margin, opt.table_margin,
-      opt.wall_back_y, opt.wall_left_x, opt.wall_right_x,
+      opt.wall_back_y, opt.wall_left_x, opt.wall_right_x, opt.wall_top_z,
       opt.base_xyz.x(), opt.base_xyz.y(), opt.base_xyz.z(),
       opt.base_rpy.x(), opt.base_rpy.y(), opt.base_rpy.z(),
       (opt.base_xyz.isZero() && opt.base_rpy.isZero()) ? "" : " (parete di montaggio)");
