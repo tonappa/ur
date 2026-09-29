@@ -122,8 +122,11 @@
     </collision>
   </link>
 
+  <!-- Camera optical center on ee_automata_V2.stl: lens rings centered at
+       x 0, z 174.5 mm (lens barrel axis parallel to Y, the viewing direction),
+       front face at y 52 mm. V1 had the lens at z 153. -->
   <joint name="ee_automata_fixed_joint" type="fixed">
-    <origin xyz="0 0.052 0.153" rpy="0 0 0"/>
+    <origin xyz="0 0.052 0.1745" rpy="0 0 0"/>
     <parent link="tool0"/>
     <child link="ee_automata_tcp"/>
   </joint>
