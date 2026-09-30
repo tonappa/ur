@@ -122,6 +122,25 @@ were computed for a point 21.5 mm below the camera. The waypoint lost in the
 current run is in the lower hemisphere: every collision-free solution there
 hides part of the platform.
 
+**Experimental TSP planner (2026-09-30).** The package `ur_automata_scan_tsp`
+plans the same scan with a different method: it also chooses the visit order
+(OR-Tools), plans everything without moving the robot, saves the plan and
+executes it later. `ur_automata_scan` keeps working as before and the two
+methods use separate files, so one can be run after the other without a new
+calibration. Motion time of the full scan, 77 / 82 waypoints in both:
+
+| method | motion time | joint travel | OMPL segments |
+|---|---|---|---|
+| `scan_sequence_node` (two calibrations) | 129.2 s, 115.0 s | 255.5, 223.8 rad | 3, 5 |
+| `scan_tsp_node order:=alternate` (two plans) | 90.8 s, 96.4 s | 178.4, 186.8 rad | 1, 2 |
+
+Method, usage and all the measured runs are in
+[`src/automata_robot/ur_automata_scan_tsp/README.md`](src/automata_robot/ur_automata_scan_tsp/README.md).
+
+Both playback nodes (`scan_replay_node` and `scan_tsp_node mode:=execute`) show
+the waypoints in RViz while they run and accept `speed:=` to play the saved
+motions slower without a new calibration (§9.4).
+
 What is left: 3–5 segments whose straight joint-space line collides, mostly in
 the lower hemisphere near the platform stem, still go to OMPL and are the
 largest motions (up to ~1.3 m of elbow travel). A set-back path (camera backs
@@ -137,7 +156,8 @@ Possible next steps:
   instead of the single optical-axis ray;
 - photo trigger at each waypoint (on hold): an MQTT "take photo" message to
   the camera side and a "photo taken" reply to the orchestrator before the
-  replay moves on; the hook is marked in `scan_replay_node.cpp`;
+  replay moves on; the hook is marked in `scan_replay_node.cpp` and in
+  `scan_tsp_node.cpp`. The measured times above do not include this stop;
 - bring-up on the real robot (calibration, IP `192.168.1.97`, low scaling,
   diagnosing the occasional abrupt stops seen during execution).
 
@@ -220,11 +240,10 @@ colcon build --packages-select ur_automata_bringup
 source install/setup.bash
 ```
 
-Tests (there is one gtest for the sequence planner; the other packages have no
-tests):
+Tests (gtest in the two scan packages; the other packages have no tests):
 
 ```bash
-colcon test --packages-select ur_automata_scan
+colcon test --packages-select ur_automata_scan ur_automata_scan_tsp
 colcon test-result --verbose
 ```
 
@@ -243,6 +262,8 @@ Which package to rebuild after a change:
 | scene code, meshes | `ur_automata_scene` |
 | SRDF, MoveIt configs | `ur_automata_moveit_config` |
 | scan nodes | `ur_automata_scan` |
+| anything in `ur_automata_scan` used by the TSP node (headers, libraries) | `ur_automata_scan`, then `ur_automata_scan_tsp` |
+| `docker/Dockerfile` | `./run.sh build` on the host, then a new container |
 
 ## 5. The single config file
 
@@ -712,10 +733,23 @@ Before moving, `scan_replay_node` refuses the recording if:
 - any recorded point collides with the current planning scene (walls, platform
   or anything else changed).
 
+RViz shows a small camera frustum on every recorded waypoint (topic
+`/scan_waypoints_markers`): gray = not reached yet, green = reached. The
+waypoints the calibration could not reach are not drawn.
+
 Then it moves to the first recorded point with a planned motion and plays the
 recorded motions one after the other. MoveIt refuses a motion if the robot is
 not where it starts. The recorded speed is the one of the calibration
 (`trajectory_scaling_factor`); the PolyScope speed slider still slows it down.
+
+To play the same recording slower, without a new calibration, pass `speed:=`
+(1.0 = as recorded, 0.5 = half speed; values above 1.0 are refused):
+
+```bash
+ros2 launch ur_automata_scan scan_replay.launch.py speed:=0.5
+```
+
+The path is the same: only times, velocities and accelerations are rescaled.
 
 ### 9.5 Scene
 
@@ -767,6 +801,7 @@ docker-compose.yaml      ros_dev service: GPU, X11, host network, workspace moun
 run.sh                   build/rebuild/run/down wrapper
 start_ursim_seccomp.sh   URSim start with the seccomp workaround
 recordings/              recorded scans for scan_replay_node (written by the calibration run)
+                         and plans of scan_tsp_node (written by mode:=plan)
 
 src/automata_robot/
   ur_automata_bringup/         single config + top-level launch files (control, moveit, bringup) + RViz
@@ -775,6 +810,8 @@ src/automata_robot/
   ur_automata_scene/           planning scene: table, platform, object, walls; STL/OBJ meshes
   ur_automata_scan/            spherical waypoint generation, sequence planner (DP), executor nodes,
                                scan recording + replay node, gtest
+  ur_automata_scan_tsp/        experimental scan planner: visit order with OR-Tools, plan saved
+                               and executed later; uses the libraries of ur_automata_scan
 
 src/utils/                     upstream UR submodules (driver and description), jazzy branch — read-only
 ```
@@ -818,4 +855,6 @@ end-effector version means updating both the mesh **and** the TCP offset in
 | move_group warns `Cannot find planning configuration ... kConfigDefault` | the entry is missing from `planner_configs` in `ompl_planning.yaml`: OMPL ignores `scan.ompl_algorithm` and uses RRTConnect |
 | The node only reports a generic FAILURE | the real causes (Pilz limits, ValidateSolution, OMPL unable to solve) are in the move_group log: `ls -t /home/ros/.ros/log/move_group_*.log \| head -1` inside the container |
 | `scan_replay_node` refuses to start | it prints why: config (center, radius, end effector) differs from the recording, the camera poses do not match the current robot model, or a recorded point collides with the current scene. Run the calibration again (`record:=true`) |
+| CMake warns `OR-Tools not found in /opt/ortools: ur_automata_scan_tsp is not built` | the image is older than the OR-Tools line of the Dockerfile: `./run.sh build` on the host and start a new container. The rest of the workspace builds anyway |
+| `scan_tsp_node mode:=execute` refuses the plan | it lists every reason (scan settings, scene object moved, robot not in the start state, ...): fix it or plan again with `mode:=plan` |
 | RViz does not open from the container | `xhost +local:docker` (already done by `./run.sh run`) and `DISPLAY` set on the host |
