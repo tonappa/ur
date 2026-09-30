@@ -82,6 +82,17 @@ ros2 service call /scan_replay_node/start std_srvs/srv/Trigger {}
 ros2 service call /scan_replay_node/pause std_srvs/srv/Trigger {}   # optional: stops after the current motion
 ```
 
+**Work session with the second method** (TSP planner, shorter scan; §9.4).
+The robot must be in `home`. Terminal 3, then the service from terminal 4:
+
+```bash
+ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute 2>&1 | tee ~/ur/log/tsp_execute.log
+ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}
+```
+
+Both work sessions accept `speed:=0.5` (or any value up to 1.0) to move slower
+without a new calibration.
+
 **Shut down:** Ctrl+C in the ROS terminals, then `./run.sh down` on the host;
 Ctrl+C in terminal 1 stops URSim (the script runs it in the foreground and
 removes the container on exit).
@@ -750,6 +761,27 @@ ros2 launch ur_automata_scan scan_replay.launch.py speed:=0.5
 ```
 
 The path is the same: only times, velocities and accelerations are rescaled.
+
+**Second method: TSP planner.** `ur_automata_scan_tsp` plans the same scan
+choosing also the visit order, and saves its own file
+(`recordings/scan_tsp.yaml`), so the two methods can be run one after the other
+with no new calibration.
+
+| | `ur_automata_scan` | `ur_automata_scan_tsp` |
+|---|---|---|
+| calibration | `scan_sequence.launch.py record:=true` + `/start`: the robot moves | `scan_tsp.launch.py mode:=plan plan_file:=<new file>`: the robot does not move |
+| calibration time | ~1.5 min of planning, then the scan (177 s in the last run) | 6–7 min (356.5 s and 410.1 s in two runs) |
+| saved file | `recordings/scan_sequence.yaml` | `recordings/scan_tsp.yaml` |
+| work session | `scan_replay.launch.py` + `/scan_replay_node/start` | `scan_tsp.launch.py mode:=execute` + `/scan_tsp_node/start` |
+| motion time | 115–129 s | 91–96 s |
+| start pose | any: it first moves to the start of the recording | `home` (the start state of the plan), or the plan is refused |
+| slower | `speed:=0.5` | `speed:=0.5` |
+
+Plan the second method to a new file and copy it over `scan_tsp.yaml` only if
+it is better than the versioned one: the result changes from run to run. Both
+need a new calibration only when the cell changes. Details, timing of each
+phase and all the measured runs:
+[`ur_automata_scan_tsp/README.md`](src/automata_robot/ur_automata_scan_tsp/README.md).
 
 ### 9.5 Scene
 

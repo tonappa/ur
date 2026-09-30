@@ -70,11 +70,49 @@ colcon build --packages-select ur_automata_scan_tsp --cmake-args -DCMAKE_CXX_FLA
 source install/setup.bash
 ```
 
-**Plan and save** (no motion; the robot must be in the pose the scans will start
-from, normally `home`):
+**Plan and save** (the calibration of this method). The robot does not move,
+so Play on the teach pendant is not needed; the bring-up must be running and the
+robot must be in the pose the scans will start from, normally `home`.
 
 ```bash
-ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=plan            # order:=alternate
+ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=plan \
+  plan_file:=/home/ros/ur/recordings/scan_tsp_new.yaml 2>&1 | tee ~/ur/log/tsp_plan_new.log
+```
+
+There is no `/start` to call: the node computes, prints the summary, saves the
+file and exits. In the summary look at `Tempo della traiettoria` (the duration
+of the scan you will get) and `tratti OMPL` (the fewer the better: 1 or 2 in the
+good runs).
+
+Plan to a **new file**, not to the default one. Without `plan_file:=` the node
+writes `recordings/scan_tsp.yaml`, which is the versioned plan, and the result
+changes from one run to the next (90.8 s and 96.4 s in the two runs made).
+Compare, then copy the new file over `scan_tsp.yaml` only if it is better; if
+the versioned plan is overwritten by mistake, `git checkout recordings/scan_tsp.yaml`
+brings it back.
+
+Time of `mode:=plan` (two runs, robot never moving):
+
+| phase | run 1 | run 2 |
+|---|---|---|
+| IK candidates | 32.4 s | 35.8 s |
+| visit order (OR-Tools) | 215.9 s | 204.3 s |
+| DP | 0.2 s | 0.2 s |
+| motion planning (MoveIt) | 108.0 s | 169.9 s |
+| **total** | **356.5 s** | **410.1 s** |
+
+So 6–7 minutes; the motion planning is the part that changes most, because
+every segment that goes to OMPL takes 15 s or more.
+
+Plan again only when the cell changes: platform, walls, sphere center or
+radius, end effector or TCP, base pose, the settings that decide the waypoints,
+or `trajectory_scaling_factor`. If it is forgotten, `mode:=execute` notices,
+lists what changed and does not move. To go slower no new plan is needed: pass
+`speed:=` to `mode:=execute`.
+
+Other orders, for comparison:
+
+```bash
 ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=plan order:=gtsp plan_file:=/home/ros/ur/recordings/scan_gtsp.yaml
 ```
 
@@ -84,7 +122,12 @@ ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=plan order:=gtsp plan_
 ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute
 ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}
 ros2 service call /scan_tsp_node/pause std_srvs/srv/Trigger {}
+ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute speed:=0.5   # half speed, same path
 ```
+
+This method and `scan_replay_node` use separate files (`recordings/scan_tsp.yaml`
+and `recordings/scan_sequence.yaml`): once both are calibrated, one can be run
+after the other in any order, with no new calibration.
 
 While executing, RViz shows a small camera frustum on every waypoint of the
 plan (topic `/scan_waypoints_markers`): gray = not reached yet, green =
