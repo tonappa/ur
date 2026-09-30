@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ur_automata_scan_tsp</name>
+  <version>0.1.0</version>
+  <description>
+    Experimental scan planner: visit order chosen with OR-Tools (TSP or joint
+    TSP over the IK solutions), IK configurations chosen with the layered DP of
+    ur_automata_scan, motions planned with MoveIt 2. Plans once, saves the
+    order and the full trajectory, and replays them in later runs.
+    OR-Tools C++ is not a rosdep key: it is installed from the binary archive in
+    /opt/ortools (see docker/Dockerfile). Without it the package builds nothing.
+  </description>
+  <maintainer email="do.park@iit.it">Do Won Park</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>ur_automata_scan</depend>
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>moveit_ros_planning</depend>
+  <depend>moveit_msgs</depend>
+  <depend>eigen3_cmake_module</depend>
+  <depend>std_srvs</depend>
+  <depend>geometric_shapes</depend>
+  <depend>yaml-cpp</depend>
+
+  <exec_depend>ur_automata_bringup</exec_depend>
+  <exec_depend>ur_automata_moveit_config</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

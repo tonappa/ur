@@ -64,6 +64,11 @@ RUN apt-get update && \
     ros-${ROS_DISTRO}-trac-ik-kinematics-plugin && \
     rm -rf /var/lib/apt/lists/*
 
+# ============ OR-Tools C++ (Apache-2.0), used by ur_automata_scan_tsp ============ #
+RUN curl -fsSL -o /tmp/ortools.tgz https://github.com/google/or-tools/releases/download/v9.15/or-tools_amd64_ubuntu-24.04_cpp_v9.15.6755.tar.gz && \
+    echo "6f389320672cee00b78aacefb2bde33fef0bb988c3b2735573b9fffd1047fbda  /tmp/ortools.tgz" | sha256sum -c && \
+    mkdir -p /opt/ortools && tar xzf /tmp/ortools.tgz -C /opt/ortools --strip-components=1 && rm /tmp/ortools.tgz
+
 # ========== Python packages ========== #
 COPY docker/requirements.txt /tmp/requirements.txt
 RUN pip install --break-system-packages --no-cache-dir -r /tmp/requirements.txt
