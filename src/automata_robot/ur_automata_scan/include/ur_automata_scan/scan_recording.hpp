@@ -40,6 +40,11 @@ struct ScanRecording {
   std::vector<RecordedSegment> segments;
 };
 
+// The same motion played at `speed` times the recorded speed (0.5 = half speed,
+// twice the time). The joint positions do not change, so the path is the same:
+// only times, velocities and accelerations are rescaled. `speed` must be > 0.
+RecordedSegment scale_segment_speed(const RecordedSegment & seg, double speed);
+
 // Writes the recording as YAML. Returns false (and fills `error`) on failure.
 bool save_recording(const std::string & path, const ScanRecording & rec, std::string & error);
 

@@ -80,6 +80,7 @@ target_link_libraries(scan_replay_node
 )
 ament_target_dependencies(scan_replay_node
   rclcpp
+  visualization_msgs
   moveit_ros_planning_interface
   moveit_ros_planning
   moveit_msgs
@@ -114,6 +115,9 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_sectors geometry_msgs Eigen3)
   ament_add_gtest(test_scan_recording test/test_scan_recording.cpp)
   target_link_libraries(test_scan_recording scan_recording)
+  ament_add_gtest(test_frustum_markers test/test_frustum_markers.cpp)
+  target_include_directories(test_frustum_markers PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_target_dependencies(test_frustum_markers rclcpp visualization_msgs)
 endif()
 
 ament_package()

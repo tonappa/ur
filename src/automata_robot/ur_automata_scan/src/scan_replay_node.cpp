@@ -30,6 +30,7 @@
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
+#include "ur_automata_scan/frustum_markers.hpp"
 #include "ur_automata_scan/planning_scene_client.hpp"
 #include "ur_automata_scan/scan_recording.hpp"
 
@@ -88,6 +89,9 @@ int main(int argc, char ** argv)
       res->success = true;
       res->message = "replay paused (stops after the current motion)";
     });
+  // Created here, well before the first publication, so RViz has time to connect.
+  auto markers_pub = node->create_publisher<visualization_msgs::msg::MarkerArray>(
+    "/scan_waypoints_markers", 10);
 
   // --- Parameters (same names as scan_sequence_node) ---
   node->declare_parameter<std::string>("recording_file",            "");
@@ -98,14 +102,24 @@ int main(int argc, char ** argv)
   node->declare_parameter<std::vector<double>>("scan_center",       {0.0, 0.4, 0.5});
   node->declare_parameter<double>     ("scan_radius",               0.35);
   node->declare_parameter<double>     ("scan_planning_time",        5.0);
+  // Speed of the replay relative to the recording: 1.0 = as recorded,
+  // 0.5 = half speed. Only slower: values above 1.0 are refused.
+  node->declare_parameter<double>     ("speed",                     1.0);
 
   const std::string recording_file = node->get_parameter("recording_file").as_string();
+  const std::string global_frame   = node->get_parameter("global_frame").as_string();
   const std::string planning_group = node->get_parameter("planning_group").as_string();
   const std::string ee_link        = node->get_parameter("end_effector_link").as_string();
   const double      scaling        = node->get_parameter("trajectory_scaling_factor").as_double();
   const auto        center         = node->get_parameter("scan_center").as_double_array();
   const double      radius         = node->get_parameter("scan_radius").as_double();
   const double      planning_time  = node->get_parameter("scan_planning_time").as_double();
+  const double      speed          = node->get_parameter("speed").as_double();
+  if (speed <= 0.0 || speed > 1.0) {
+    std::fprintf(stderr, "speed deve essere maggiore di 0 e al massimo 1.0 (ricevuto %.3f).\n", speed);
+    rclcpp::shutdown();
+    return 1;
+  }
 
   // --- Load the recording ---
   ScanRecording rec;
@@ -141,8 +155,9 @@ int main(int argc, char ** argv)
 
   moveit::planning_interface::MoveGroupInterface move_group(node, planning_group);
   move_group.setEndEffectorLink(ee_link);
-  move_group.setMaxVelocityScalingFactor(scaling);
-  move_group.setMaxAccelerationScalingFactor(scaling);
+  // Only for the planned motion to the first recorded point, slowed like the rest.
+  move_group.setMaxVelocityScalingFactor(scaling * speed);
+  move_group.setMaxAccelerationScalingFactor(scaling * speed);
   move_group.setPlanningTime(planning_time);
 
   planning_scene::PlanningScenePtr scene =
@@ -207,10 +222,14 @@ int main(int argc, char ** argv)
         return 1;
       }
     }
-    total_motion_s += seg.points.back().time;
+    total_motion_s += seg.points.back().time / speed;
   }
   std::printf("Controlli superati: modello e scena coerenti con la registrazione. "
-              "Durata dei movimenti registrati: %.1f s\n", total_motion_s);
+              "Durata dei movimenti registrati: %.1f s (speed %.2f)\n", total_motion_s, speed);
+
+  // --- Gray camera frustums on the recorded waypoints ---
+  visualization_msgs::msg::MarkerArray markers = make_frustum_markers(rec, global_frame);
+  publish_first_frustums(markers_pub, markers);
 
   // --- Go to the first recorded point with a planned motion ---
   if (!wait_while_paused()) {
@@ -253,7 +272,7 @@ int main(int argc, char ** argv)
     }
     const RecordedSegment & seg = rec.segments[k];
     // MoveIt refuses the motion if the robot is not where it starts.
-    if (move_group.execute(to_trajectory(seg)) != moveit::core::MoveItErrorCode::SUCCESS) {
+    if (move_group.execute(to_trajectory(scale_segment_speed(seg, speed))) != moveit::core::MoveItErrorCode::SUCCESS) {
       std::fprintf(stderr, "Movimento %zu/%zu ('%s') non eseguito: replay interrotto.\n",
                    k + 1, rec.segments.size(), seg.label.c_str());
       completed = false;
@@ -263,6 +282,8 @@ int main(int argc, char ** argv)
     if (seg.waypoint >= 0) {
       ++waypoints_done;
       // The camera is on waypoint seg.waypoint: this is where the photo will be taken.
+      set_frustum_reached(markers, k);
+      markers_pub->publish(markers);
     }
     std::printf("  %3zu/%zu  %-10s  (%.1f s)\n", k + 1, rec.segments.size(), seg.label.c_str(), elapsed);
     std::fflush(stdout);

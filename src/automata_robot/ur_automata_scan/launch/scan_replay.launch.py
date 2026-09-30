@@ -3,7 +3,10 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _load_config():
@@ -52,8 +55,13 @@ def generate_launch_description():
             "scan_center":               s["center"],
             "scan_radius":               s["radius"],
             "scan_planning_time":        s["planning_time"],
+            "speed": ParameterValue(LaunchConfiguration("speed"), value_type=float),
             },
         ],
     )
 
-    return LaunchDescription([replay_node])
+    return LaunchDescription([
+        # Speed relative to the recording: 1.0 = as recorded, 0.5 = half speed (max 1.0)
+        DeclareLaunchArgument("speed", default_value="1.0"),
+        replay_node,
+    ])

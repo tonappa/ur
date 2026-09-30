@@ -12,6 +12,17 @@ static void emit_numbers(YAML::Emitter & out, const std::vector<double> & values
   out << YAML::EndSeq;
 }
 
+RecordedSegment scale_segment_speed(const RecordedSegment & seg, double speed)
+{
+  RecordedSegment scaled = seg;
+  for (RecordedPoint & p : scaled.points) {
+    p.time = p.time / speed;
+    for (double & v : p.velocities)    v = v * speed;
+    for (double & a : p.accelerations) a = a * speed * speed;
+  }
+  return scaled;
+}
+
 bool save_recording(const std::string & path, const ScanRecording & rec, std::string & error)
 {
   YAML::Emitter out;

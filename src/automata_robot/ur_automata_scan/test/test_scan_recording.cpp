@@ -78,6 +78,29 @@ TEST(ScanRecording, SaveAndLoadRoundTrip)
   EXPECT_TRUE(rec.segments[1].camera_pose.empty());
 }
 
+// Half speed: twice the time, half the velocity, a quarter of the acceleration,
+// same positions.
+TEST(ScanRecording, ScaleSegmentSpeed)
+{
+  RecordedSegment seg;
+  RecordedPoint p;
+  p.time = 2.0;
+  p.positions = {0.25, -1.2};
+  p.velocities = {0.4, -0.8};
+  p.accelerations = {1.0, -2.0};
+  seg.points = {p};
+
+  RecordedSegment slow = scale_segment_speed(seg, 0.5);
+  EXPECT_DOUBLE_EQ(slow.points[0].time, 4.0);
+  EXPECT_DOUBLE_EQ(slow.points[0].positions[1], -1.2);
+  EXPECT_DOUBLE_EQ(slow.points[0].velocities[1], -0.4);
+  EXPECT_DOUBLE_EQ(slow.points[0].accelerations[1], -0.5);
+
+  RecordedSegment same = scale_segment_speed(seg, 1.0);
+  EXPECT_DOUBLE_EQ(same.points[0].time, 2.0);
+  EXPECT_DOUBLE_EQ(same.points[0].velocities[0], 0.4);
+}
+
 // A missing file or a point with the wrong number of joints is an error, not
 // a partial recording.
 TEST(ScanRecording, RejectsBadFiles)
