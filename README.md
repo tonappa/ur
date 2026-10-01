@@ -83,7 +83,8 @@ ros2 service call /scan_replay_node/pause std_srvs/srv/Trigger {}   # optional: 
 ```
 
 **Work session with the second method** (TSP planner, shorter scan; §9.4).
-The robot must be in `home`. Terminal 3, then the service from terminal 4:
+From any pose: if the robot is not in the start state of the plan (`home`), it
+goes there first. Terminal 3, then the service from terminal 4:
 
 ```bash
 ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute 2>&1 | tee ~/ur/log/tsp_execute.log
@@ -774,7 +775,7 @@ with no new calibration.
 | saved file | `recordings/scan_sequence.yaml` | `recordings/scan_tsp.yaml` |
 | work session | `scan_replay.launch.py` + `/scan_replay_node/start` | `scan_tsp.launch.py mode:=execute` + `/scan_tsp_node/start` |
 | motion time | 115–129 s | 91–96 s |
-| start pose | any: it first moves to the start of the recording | `home` (the start state of the plan), or the plan is refused |
+| start pose | any: it first moves to the start of the recording | any: it first moves to the start state of the plan (`home`) |
 | slower | `speed:=0.5` | `speed:=0.5` |
 
 Plan the second method to a new file and copy it over `scan_tsp.yaml` only if
@@ -888,5 +889,5 @@ end-effector version means updating both the mesh **and** the TCP offset in
 | The node only reports a generic FAILURE | the real causes (Pilz limits, ValidateSolution, OMPL unable to solve) are in the move_group log: `ls -t /home/ros/.ros/log/move_group_*.log \| head -1` inside the container |
 | `scan_replay_node` refuses to start | it prints why: config (center, radius, end effector) differs from the recording, the camera poses do not match the current robot model, or a recorded point collides with the current scene. Run the calibration again (`record:=true`) |
 | CMake warns `OR-Tools not found in /opt/ortools: ur_automata_scan_tsp is not built` | the image is older than the OR-Tools line of the Dockerfile: `./run.sh build` on the host and start a new container. The rest of the workspace builds anyway |
-| `scan_tsp_node mode:=execute` refuses the plan | it lists every reason (scan settings, scene object moved, robot not in the start state, ...): fix it or plan again with `mode:=plan` |
+| `scan_tsp_node mode:=execute` refuses the plan | it lists every reason (scan settings, scene object moved, ...): fix it or plan again with `mode:=plan` |
 | RViz does not open from the container | `xhost +local:docker` (already done by `./run.sh run`) and `DISPLAY` set on the host |

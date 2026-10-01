@@ -15,8 +15,9 @@
 //        recovery poses as scan_sequence_node), durations measured;
 //     5. refinement: the measured durations replace the estimates and 2-4 are
 //        repeated; the best measured plan is saved to plan_file.
-//   mode:=execute  Loads plan_file, checks it against the current cell and robot
-//     state, then executes it (starts paused, like scan_replay_node):
+//   mode:=execute  Loads plan_file, checks it against the current cell, then
+//     executes it (starts paused, like scan_replay_node). If the robot is not
+//     in the start state of the plan, it first goes there with a planned motion:
 //       ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}
 //       ros2 service call /scan_tsp_node/pause std_srvs/srv/Trigger {}
 //
@@ -290,7 +291,7 @@ int main(int argc, char ** argv)
   // cheapest neighbour waypoints (0 = no check, costs ignore collisions).
   node->declare_parameter<int>        ("tsp_check_neighbours", 10);
   // execute: largest joint difference (rad) between the current state and
-  // the state the plan starts from.
+  // the state the plan starts from; above it the robot first moves there.
   node->declare_parameter<double>     ("start_tolerance_rad",  0.01);
   // execute: speed relative to the plan, 1.0 = as planned, 0.5 = half speed.
   // Only slower: values above 1.0 are refused.
@@ -519,16 +520,19 @@ int main(int argc, char ** argv)
         reasons.push_back(buf);
       }
     }
-    // Start state.
-    if (d.start_joints.size() == current_joints.size()) {
+    // Start state: if the robot is not there, it goes there after /start.
+    bool move_to_start = false;
+    if (d.start_joints.size() != current_joints.size()) {
+      reasons.push_back("stato iniziale del piano assente o con un numero di giunti diverso");
+    } else {
       double worst = 0.0;
       for (size_t k = 0; k < current_joints.size(); ++k) {
         worst = std::max(worst, std::abs(d.start_joints[k] - current_joints[k]));
       }
       if (worst > start_tolerance) {
-        std::snprintf(buf, sizeof(buf), "robot lontano dallo stato iniziale del piano (%.3f rad su un giunto, "
-                      "tolleranza %.3f): portarlo nella posa iniziale o ripianificare", worst, start_tolerance);
-        reasons.push_back(buf);
+        move_to_start = true;
+        std::printf("Robot a %.3f rad dallo stato iniziale del piano (tolleranza %.3f): "
+                    "ci andra' dopo /start.\n", worst, start_tolerance);
       }
     }
     // Scene objects.
@@ -615,8 +619,36 @@ int main(int argc, char ** argv)
     std::printf("In pausa: ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}\n");
     std::fflush(stdout);
 
-    // The execution time starts at the first /start, not while waiting for it.
     while (g_paused.load() && rclcpp::ok()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    if (!rclcpp::ok()) return shutdown(1);
+
+    // Planned motion to the start state of the plan (as scan_replay_node),
+    // slowed like the rest. Not counted in the execution time.
+    if (move_to_start) {
+      move_group.setMaxVelocityScalingFactor(scaling * speed);
+      move_group.setMaxAccelerationScalingFactor(scaling * speed);
+      move_group.setJointValueTarget(d.start_joints);
+      MoveGroup::Plan start_plan;
+      bool start_ok = false;
+      const std::string pipelines[2][2] = {{"pilz_industrial_motion_planner", "PTP"},
+                                           {"ompl", "RRTConnectkConfigDefault"}};
+      for (const auto & pipeline : pipelines) {
+        move_group.setPlanningPipelineId(pipeline[0]);
+        move_group.setPlannerId(pipeline[1]);
+        if (move_group.plan(start_plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+          start_ok = move_group.execute(start_plan) == moveit::core::MoveItErrorCode::SUCCESS;
+          break;
+        }
+      }
+      if (!start_ok) {
+        std::fprintf(stderr, "Impossibile portare il robot nello stato iniziale del piano.\n");
+        return shutdown(1);
+      }
+      std::printf("Robot nello stato iniziale del piano.\n");
+      std::fflush(stdout);
+    }
+
+    // The execution time starts after /start and the motion to the start state.
     const auto exec_t0 = std::chrono::steady_clock::now();
     int waypoints_done = 0;
     bool completed = true;

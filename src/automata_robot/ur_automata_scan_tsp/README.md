@@ -116,7 +116,10 @@ Other orders, for comparison:
 ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=plan order:=gtsp plan_file:=/home/ros/ur/recordings/scan_gtsp.yaml
 ```
 
-**Load and execute** (starts paused):
+**Load and execute** (starts paused). If the robot is farther than
+`start_tolerance_rad` from the start state of the plan, after `/start` it first
+goes there with a planned motion (Pilz PTP, then OMPL RRTConnect), not counted
+in the execution time:
 
 ```bash
 ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute
@@ -192,8 +195,8 @@ YAML, the same keys as the recordings of `scan_sequence_node` (so
 
 Before executing, `mode:=execute` checks all of them and lists **every**
 reason the plan does not fit: different group or end effector, different
-waypoint settings or positions, different scaling or joint limits, robot not in
-the start state (`start_tolerance_rad`), scene object moved (> 1 mm), missing
+waypoint settings or positions, different scaling or joint limits, scene
+object moved (> 1 mm), missing
 or new, camera pose not matching the current model (> 2 mm / 1°), any
 trajectory point colliding with the current scene. Then it asks for a new
 `mode:=plan` and does not move.
