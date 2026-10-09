@@ -23,9 +23,31 @@ def _load_config():
     with open(cfg_path, "r") as f:
         return yaml.safe_load(f)
 
+def _calibration_path(cfg):
+    """Full path of robot.calibration_file, or "" for the nominal kinematics."""
+    name = str(cfg["robot"].get("calibration_file", "") or "")
+    if name == "":
+        return ""
+    path = os.path.join(get_package_share_directory("ur_automata_bringup"), "config", name)
+    if not os.path.isfile(path):
+        raise RuntimeError("robot.calibration_file not found: " + path +
+                           " (run ur_calibration, then rebuild ur_automata_bringup)")
+    return path
+
 
 def generate_launch_description():
     cfg = _load_config()
+    calibration = _calibration_path(cfg)
+    if calibration == "":
+        # Nominal kinematics of ur_description (fine for URSim).
+        kinematics_default = PathJoinSubstitution([
+            FindPackageShare("ur_description"),
+            "config",
+            LaunchConfiguration("ur_type"),
+            "default_kinematics.yaml",
+        ])
+    else:
+        kinematics_default = calibration
 
     declared_arguments = [
         DeclareLaunchArgument(
@@ -46,14 +68,10 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "kinematics_params_file",
-            default_value=PathJoinSubstitution([
-                FindPackageShare("ur_description"),
-                "config",
-                LaunchConfiguration("ur_type"),
-                "default_kinematics.yaml",
-            ]),
+            default_value=kinematics_default,
             description="YAML produced by ur_calibration for this specific robot. "
-            "Defaults to the nominal kinematics from ur_description (OK for URSim).",
+            "Default: robot.calibration_file of automata_config.yaml, or the nominal "
+            "kinematics of ur_description if it is empty (OK for URSim).",
         ),
         DeclareLaunchArgument(
             "tf_prefix",

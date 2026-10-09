@@ -430,18 +430,24 @@ ping 192.168.1.97
 ### 7.2 Kinematic calibration (once per robot)
 
 Every UR leaves the factory with its own measured DH parameters: without them
-the error at the tool can reach a few millimeters. Do this **once** for each
-physical robot, with the robot on and reachable:
+the error at the tool can reach a few millimeters, up to centimeters. Do this
+**once** for each physical robot, with the controller on and reachable (the
+robot does not move, External Control is not needed):
 
 ```bash
 ros2 launch ur_calibration calibration_correction.launch.py \
   robot_ip:=192.168.1.97 \
-  target_filename:="/home/ros/ur/src/automata_robot/ur_automata_bringup/config/ur5e_calibration.yaml"
+  target_filename:="/home/ros/ur/src/automata_robot/ur_automata_bringup/config/ur5_calibration.yaml"
 ```
 
-The resulting YAML must then be passed to the bring-up (see below). Without it,
-the nominal values from `ur_description` are used: fine for URSim, **not** for
-the real robot.
+The cell's UR5 (CB3) is already calibrated: `ur5_calibration.yaml`. The driver
+submodule must be at a commit with the `ur_calibration` fix (upstream
+`0089621`, October 2026): older versions never open the connection and loop on
+`Stream is invalid. Connect it before trying to read!`.
+
+The file name goes in `robot.calibration_file` (next section). Without it, the
+nominal values from `ur_description` are used: fine for URSim, **not** for the
+real robot.
 
 ### 7.3 Configuration
 
@@ -450,25 +456,23 @@ In `automata_config.yaml`:
 ```yaml
 robot:
   ip: 192.168.1.97
-  type: ur5e            # the actual model in the cell
+  type: ur5                                # the actual model in the cell (UR5, CB3)
+  calibration_file: ur5_calibration.yaml   # in ur_automata_bringup/config; "" = nominal
 ```
 
-then rebuild `ur_automata_bringup` (see §4).
-
-The calibration file has no entry in the YAML, so launch the two levels
-separately. This is the only clean way to pass arguments to the control level,
-because the top-level launch file does not re-declare them:
+then rebuild `ur_automata_bringup` (see §4). Both the driver and MoveIt read
+`calibration_file`: `move_group` must plan and check collisions on the same
+model as the real robot. With the calibration only in the driver, MoveIt
+plans on the nominal robot and the scan nodes (calibrated model) can refuse a
+plan for a collision of a few millimeters MoveIt did not see. The MoveIt
+launch prints `[ur_automata_moveit] kinematics: <file>` at start.
 
 ```bash
 # terminal 1 — driver + controllers
-ros2 launch ur_automata_bringup ur_automata_control.launch.py \
-  ur_type:=ur5e \
-  robot_ip:=192.168.1.97 \
-  kinematics_params_file:=/home/ros/ur/src/automata_robot/ur_automata_bringup/config/ur5e_calibration.yaml
+ros2 launch ur_automata_bringup ur_automata_control.launch.py
 
 # terminal 2 — MoveIt + RViz (+ scene)
-ros2 launch ur_automata_bringup ur_automata_moveit.launch.py \
-  ur_type:=ur5e use_rviz:=true use_scene:=true
+ros2 launch ur_automata_bringup ur_automata_moveit.launch.py
 ```
 
 `ur_type` **must be the same in both commands**: otherwise the kinematic model
@@ -481,7 +485,7 @@ Useful arguments of `ur_automata_control.launch.py`:
 |---|---|---|
 | `ur_type` | from YAML | UR model |
 | `robot_ip` | from YAML | controller IP |
-| `kinematics_params_file` | nominal from `ur_description` | YAML from `ur_calibration` |
+| `kinematics_params_file` | `robot.calibration_file`, or nominal if empty | YAML from `ur_calibration`; also an argument of `ur_automata_moveit.launch.py`: override both or neither |
 | `headless_mode` | `false` | `true` = the driver sends the URScript directly, without the External Control program on the pendant |
 | `tf_prefix` | `""` | prefix on joints and links |
 | `initial_joint_controller` | `scaled_joint_trajectory_controller` | MoveIt expects this one |
@@ -515,8 +519,8 @@ Useful arguments of `ur_automata_control.launch.py`:
 | | URSim | Real robot |
 |---|---|---|
 | `robot.ip` | `192.168.56.101` | controller IP (e.g. `192.168.1.97`) |
-| `robot.type` | `ur5` (URSim starts with `ROBOT_MODEL=UR5`) | the real model, e.g. `ur5e` |
-| `kinematics_params_file` | nominal default is fine | **required**: the YAML from `ur_calibration` |
+| `robot.type` | `ur5` (the URSim e-series image with `ROBOT_MODEL=UR5` is really a UR5e) | the real model: `ur5` (CB3) in this cell |
+| `robot.calibration_file` | `""` (nominal) | **required**: the YAML from `ur_calibration`, e.g. `ur5_calibration.yaml` |
 | `trajectory_scaling_factor` | `0.4` is fine | start from `0.05`–`0.1` |
 | `planning.use_rviz` | `true` | `true` to check, `false` in production |
 | `scan.platform_sim` / `platform_mesh` | either | `false` + the STL that matches the real platform |

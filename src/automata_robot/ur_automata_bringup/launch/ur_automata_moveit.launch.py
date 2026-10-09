@@ -25,6 +25,17 @@ def _load_config():
     with open(cfg_path, "r") as f:
         return yaml.safe_load(f)
 
+def _calibration_path(cfg):
+    """Full path of robot.calibration_file, or "" for the nominal kinematics."""
+    name = str(cfg["robot"].get("calibration_file", "") or "")
+    if name == "":
+        return ""
+    path = os.path.join(get_package_share_directory("ur_automata_bringup"), "config", name)
+    if not os.path.isfile(path):
+        raise RuntimeError("robot.calibration_file not found: " + path +
+                           " (run ur_calibration, then rebuild ur_automata_bringup)")
+    return path
+
 
 def launch_setup(context, *args, **kwargs):
     # ur_type deve essere risolto qui (stringa) perché MoveItConfigsBuilder lo
@@ -33,9 +44,17 @@ def launch_setup(context, *args, **kwargs):
     use_rviz = LaunchConfiguration("use_rviz")
     use_sim_time = LaunchConfiguration("use_sim_time")
 
+    # Same kinematics as the driver: without the calibration file move_group
+    # would plan and check collisions on the nominal robot.
+    mappings = {"ur_type": ur_type}
+    kinematics_file = LaunchConfiguration("kinematics_params_file").perform(context)
+    if kinematics_file != "":
+        mappings["kinematics_params"] = kinematics_file
+    print("[ur_automata_moveit] kinematics: " + (kinematics_file if kinematics_file else "nominal"))
+
     moveit_config = (
         MoveItConfigsBuilder("ur_automata", package_name="ur_automata_moveit_config")
-        .robot_description(mappings={"ur_type": ur_type})
+        .robot_description(mappings=mappings)
         .to_moveit_configs()
     )
 
@@ -106,6 +125,13 @@ def generate_launch_description():
             description="UR robot model (ur5, ur5e, ...). Default letto da automata_config.yaml. "
                         "DEVE coincidere con quello passato a ur_automata_control.launch.py: altrimenti "
                         "il modello cinematico del move_group non corrisponde al TF pubblicato dal driver.",
+        ),
+        DeclareLaunchArgument(
+            "kinematics_params_file",
+            default_value=_calibration_path(cfg),
+            description="YAML produced by ur_calibration. Default: robot.calibration_file of "
+                        "automata_config.yaml (\"\" = nominal kinematics). Must be the same file "
+                        "the driver uses.",
         ),
         DeclareLaunchArgument(
             "use_rviz",
