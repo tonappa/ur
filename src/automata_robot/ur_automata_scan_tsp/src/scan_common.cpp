@@ -34,7 +34,7 @@ std::vector<double> build_pitch_offsets_rad(double range_deg, double step_deg)
 // Line of sight camera -> center against the scene objects. If the segment
 // crosses an object the photo shows the obstacle (e.g. the platform stem): the
 // waypoint is dropped before any IK. Ignored: the center marker, the scanned
-// object, the keep-out margins and hits within 3 cm of the center.
+// object, the keep-out margins and cylinders and hits within 3 cm of the center.
 // ---------------------------------------------------------------------------
 
 // Moller-Trumbore ray / triangle intersection.
@@ -67,7 +67,8 @@ static bool is_scene_occluding(
   std::string & hit_object)
 {
   static const std::set<std::string> ignored_objects = {
-    "support_center", "artefact", "platform_margin", "table_margin"};
+    "support_center", "artefact", "table_margin",
+    "keepout_stem_base", "keepout_stem", "keepout_disk", "keepout_support"};
   const double ignore_near_center = 0.03;   // m
 
   const Eigen::Vector3d seg = center - from;

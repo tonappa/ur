@@ -55,18 +55,33 @@ scan:
                                  # La mesh della piattaforma nella scena segue questo valore.
   platform_sim: false   # true: scena con disco+3 gambe simulati | false: usa il mesh STL `platform_mesh`
   # File STL in ur_automata_scene/meshes (mm, stesso riferimento di disk.stl), usato con platform_sim false:
-  #   disk.stl        solo il disco Ø300x4 vicino al robot
+  #   disk.stl        solo il disco Ø300x4 vicino al robot (stesso riferimento di platform01:
+  #                   con la posa di platform02 finirebbe 5.9 cm sopra center)
   #   platform01.stl  piattaforma completa: due dischi a ±0.20 m dall'asse, mozzo, stelo, basamento
-  #                   con motore dalla parte opposta al robot; 28k triangoli. Il basamento finisce
-  #                   4.9 cm sotto il tavolo perche' la piattaforma e' alta 0.504 m e center.z e' 0.455.
-  platform_mesh: platform01.stl
-  # Keep-out di margine (metri, 0 = disattivo), gialli in RViz:
-  #   platform_margin -> cilindro attorno al disco (raggio +m, spessore +2m);
-  #                      protegge anche dal "buco" nel disco da 4 mm fra due check
+  #                   con motore dalla parte opposta al robot; 28k triangoli. Alta 0.514 m: con la
+  #                   posa di platform02 il disco finirebbe 5.9 cm sopra center -> non usarla.
+  #   platform02.stl  (2026-10-09) come platform01 con lo stelo accorciato di 59 mm: piedi 0.455 m
+  #                   sotto il disco, quindi appoggiata sul tavolo con center.z 0.455. The scene
+  #                   (mesh pose and keepouts) uses the measures of this file.
+  platform_mesh: platform02.stl
+  # Keep-out di margine (metri, 0 = disattivo), giallo in RViz:
   #   table_margin    -> lastra alta m sul tavolo sotto la sfera (da y 0.12, fuori dalla base)
   # dp8: con 0.02 su entrambi si perde il wp 46 (sotto il disco, lato base) -> tavolo a 0.
-  platform_margin: 0.0
   table_margin: 0.0
+  # Keep-out cylinders around the real platform (only with platform_sim: false),
+  # light blue in RViz. The robot plans around them, they do not hide the view
+  # (line-of-sight check). Meters. After a change: rebuild ur_automata_bringup,
+  # restart the bring-up and plan the TSP scan again (the scene is part of the plan).
+  #   stem_base -> lower part of the stem (hub and collars), standing on the top of the base
+  #   stem      -> stem, standing on top of stem_base (on the stem axis, 0.20 m behind center)
+  #   disk      -> disk of the artefact, top face at scan.center, going down by `height`
+  #   support   -> box around the block on top of the stem (180 x 120 x 47 mm), `margin`
+  #                larger on every side; the top is cut at the disk top face
+  keepouts:
+    stem_base: {enabled: true, diameter: 0.14, height: 0.10}
+    stem:      {enabled: true, diameter: 0.08, height: 0.23}
+    disk:      {enabled: true, diameter: 0.34, height: 0.005}
+    support:   {enabled: true, margin: 0.01}
 
   # Muri della cella (metri nel frame globale, 0 = nessun muro). Dietro e ai
   # lati, niente davanti: la piattaforma sta a y positiva. Limiti fisici:

@@ -309,7 +309,7 @@ scan:
   center: [0.133, 0.375, 0.455]
   radius: 0.30
   platform_sim: false
-  platform_mesh: platform01.stl
+  platform_mesh: platform02.stl
   ...
 ```
 
@@ -660,8 +660,8 @@ search and no fallback, orange marker in RViz, and a separate counter in the
 summary (`Vista coperta: N waypoint scartati`). Fallback candidates go through
 the same check.
 
-Ignored by the check: `support_center`, `artefact`, the margin keep-outs
-(`platform_margin`, `table_margin`) and hits within 3 cm of the center (the
+Ignored by the check: `support_center`, `artefact`, the keep-outs
+(`table_margin` and the `keepouts` shapes) and hits within 3 cm of the center (the
 disk right under the object, crossed by every lower-hemisphere ray a few
 millimeters from the center). The check is always on and uses a single ray
 along the optical axis, not the full camera field of view.
@@ -795,21 +795,34 @@ a rebuild of `ur_automata_bringup` (it is a YAML key), not of the scene package.
 
 | `platform_mesh` | content |
 |---|---|
-| `disk.stl` | only the Ø300 × 4 mm disk close to the robot. There is **no support** under the disk in the scene |
-| `platform01.stl` | the full rotating platform: two disks at ±0.20 m from the axis, hub, stem, base with the motor on the side away from the robot; ~28k triangles. The base ends 4.9 cm below the table top (the platform is 0.504 m tall, `center.z` is 0.455); harmless for planning |
+| `disk.stl` | only the Ø300 × 4 mm disk close to the robot. There is **no support** under the disk in the scene. Same reference as `platform01.stl`, so it would also end up 5.9 cm too high |
+| `platform01.stl` | the full rotating platform: two disks at ±0.20 m from the axis, hub, stem, base with the motor on the side away from the robot; ~28k triangles. 0.514 m tall: the scene now uses the measures of `platform02.stl`, so this file would end up 5.9 cm too high |
+| `platform02.stl` | (in use) as `platform01.stl` with the stem 59 mm shorter: the feet are 0.455 m below the disk, so with `center.z` 0.455 the platform stands on the table. The mesh pose and the keep-outs use the measures of this file |
 
 The object to scan is `meshes/ceramic_model.obj`, placed at `scan.center`.
 
-`platform_margin` and `table_margin` (meters, `0` = off) add two
-semi-transparent yellow keep-out zones: a cylinder around the disk
-(radius + margin, thickness + 2·margin) and a slab *margin* tall on the table
-under the sphere, starting at y = 0.12 so it does not touch the base. MoveIt's
-collision check is binary, so this is how a safety margin is obtained; it
-applies to the IK candidate filter and to the planners, paths included. A thick
-object cannot be "skipped" between two checks the way a 4 mm plate can.
-Careful under the disk: there are ~28 cm between table and platform and the arm
-goes in edgewise, so a 2 cm margin on both is enough to lose the lowest
-waypoints.
+`table_margin` (meters, `0` = off) adds a semi-transparent yellow keep-out
+slab *margin* tall on the table under the sphere, starting at y = 0.12 so it
+does not touch the base. MoveIt's collision check is binary, so this is how a
+safety margin is obtained; it applies to the IK candidate filter and to the
+planners, paths included. Careful under the disk: there are ~28 cm between
+table and platform and the arm goes in edgewise, so a 2 cm margin is enough to
+lose the lowest waypoints.
+
+`keepouts` adds light blue, very transparent keep-out shapes around the real
+platform (only with `platform_sim: false`), each with `enabled`, `diameter` and
+`height` in meters (the `support` box has a `margin`):
+
+| cylinder | where |
+|---|---|
+| `stem_base` | lower part of the stem (hub Ø120, collars Ø72), standing on the top of the base, on the stem axis 0.20 m behind `center` |
+| `stem` | stem (Ø60 in the STL), standing on top of `stem_base` |
+| `disk` | artefact disk, top face at `center`, going down by `height` |
+| `support` | box around the block on top of the stem (180 × 120 × 47 mm), `margin` larger on every side (instead of `diameter`/`height`); the top is cut at the disk top face |
+
+A very thin cylinder can be "skipped" between two collision checks of a path,
+so keep `disk.height` around 1 cm or more. The scene is part of the TSP plan:
+after a change, plan again (`mode:=plan`).
 
 `walls` (`back_y`, `left_x`, `right_x`, `top_z`, meters, `0` = no wall) adds
 the cell walls behind and beside the robot, never in front, and a ceiling at

@@ -139,11 +139,13 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   // ---------------- Table ----------------
   shape_msgs::msg::SolidPrimitive table_shape;
   table_shape.type = shape_msgs::msg::SolidPrimitive::BOX;
-  // Spessore 0.10 m, centro a z=-0.05 → faccia superiore a z=0.0 (piano base
-  // del robot). Blocca il gomito che nelle pose laterali basse scende sotto
-  // z=0.
+  // Spessore 0.10 m, faccia superiore a z=-0.001, 1 mm sotto il piano base
+  // del robot. Blocca il gomito che nelle pose laterali basse scende sotto
+  // z=0. The 1 mm gap matters: the UR base collision mesh goes down to
+  // z = -0.000002, and at exactly z = 0 move_group sometimes reports a
+  // base_link_inertia - table contact and refuses the start state.
   table_shape.dimensions = {1.5, 1.5, 0.10};
-  Eigen::Vector3d table_pos(0.0, 0.0, -0.05);
+  Eigen::Vector3d table_pos(0.0, 0.0, -0.051);
   moveit_msgs::msg::CollisionObject table = make_obj(
       "table", table_shape, table_pos, identity_quat(), global_frame, stamp);
 
@@ -296,13 +298,15 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
     // Rotazione composta: +90° attorno X, poi -90° attorno Z (entrambi nel
     // frame world). Con questa rotazione, e l'STL scalato in metri, il disco
     // (Ø 300 mm, spessore 4 mm) risulta centrato in (x, y - 0.20) e con la
-    // faccia superiore a z + 0.504 rispetto all'origine della mesh. La posa e'
-    // quindi ricavata da `center` cosi' che il piano di appoggio coincida con
-    // il centro di scansione: spostare la piattaforma = cambiare scan.center.
+    // faccia superiore a z + 0.445 rispetto all'origine della mesh (valore di
+    // platform02.stl: piedi 0.455 m sotto il disco, cioe' sul tavolo con
+    // center.z 0.455). La posa e' quindi ricavata da `center` cosi' che il
+    // piano di appoggio coincida con il centro di scansione: spostare la
+    // piattaforma = cambiare scan.center.
     geometry_msgs::msg::Pose platform_pose;
     platform_pose.position.x = center.x();
     platform_pose.position.y = center.y() + 0.20;
-    platform_pose.position.z = center.z() - 0.504;
+    platform_pose.position.z = center.z() - 0.445;
     Eigen::Quaterniond q_rot =
         Eigen::AngleAxisd(-M_PI / 2.0, Eigen::Vector3d::UnitZ()) *
         Eigen::AngleAxisd(M_PI / 2.0, Eigen::Vector3d::UnitX());
@@ -334,28 +338,69 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   artefact.mesh_poses.push_back(mesh_pose);
 
   // ---------------- Keep-out di margine (opzionali) ----------------
-  // Oggetti "gonfiati" attorno a disco e tavolo: il check di collisione di
+  // Oggetti "gonfiati" attorno agli ostacoli: il check di collisione di
   // MoveIt e' binario, quindi il margine si ottiene facendo collidere il
   // robot con questi prima che tocchi l'ostacolo vero. Sono oggetti del
-  // mondo: non collidono fra loro ne' con disco e oggetto, solo con il robot.
-  // Un cilindro spesso non si "buca" fra due controlli come una piastra da 4 mm.
-  const bool use_platform_margin = opt.platform_margin > 0.0;
+  // mondo: non collidono fra loro ne' con la piattaforma, solo con il robot.
   const bool use_table_margin = opt.table_margin > 0.0;
-  moveit_msgs::msg::CollisionObject platform_margin, table_margin;
+  moveit_msgs::msg::CollisionObject table_margin;
 
-  if (use_platform_margin) {
-    // Il disco simulato e' alto 0.008 centrato su center.z; l'STL e' alto
-    // 0.004 con la faccia superiore su center.z.
-    double disk_thickness = platform_sim ? 0.008 : 0.004;
-    double disk_mid_z = platform_sim ? center.z() : center.z() - 0.002;
+  // Keep-out cylinders around the real platform (STL mode only). Positions
+  // from platform02.stl: the stem axis is 0.20 m behind `center` (+y) and the
+  // top of the base is 0.379 m below `center`.
+  const bool use_stem_base = !platform_sim && opt.stem_base_enabled;
+  const bool use_stem      = !platform_sim && opt.stem_enabled;
+  const bool use_disk      = !platform_sim && opt.disk_enabled;
+  const bool use_support   = !platform_sim && opt.support_enabled;
+  moveit_msgs::msg::CollisionObject keepout_stem_base, keepout_stem, keepout_disk, keepout_support;
 
-    shape_msgs::msg::SolidPrimitive pm_shape;
-    pm_shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
-    pm_shape.dimensions = {disk_thickness + 2.0 * opt.platform_margin,
-                           0.15 + opt.platform_margin};
-    Eigen::Vector3d pm_pos(center.x(), center.y(), disk_mid_z);
-    platform_margin = make_obj("platform_margin", pm_shape, pm_pos,
-                               identity_quat(), global_frame, stamp);
+  const double stem_axis_x = center.x();
+  const double stem_axis_y = center.y() + 0.20;
+  const double base_top_z = center.z() - 0.379;
+
+  if (use_stem_base) {
+    shape_msgs::msg::SolidPrimitive shape;
+    shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
+    shape.dimensions = {opt.stem_base_height, opt.stem_base_diameter / 2.0};   // height, radius
+    Eigen::Vector3d pos(stem_axis_x, stem_axis_y, base_top_z + opt.stem_base_height / 2.0);
+    keepout_stem_base = make_obj("keepout_stem_base", shape, pos, identity_quat(),
+                                 global_frame, stamp);
+  }
+  if (use_stem) {
+    // Stands on top of stem_base (also when stem_base is disabled).
+    const double bottom_z = base_top_z + opt.stem_base_height;
+    shape_msgs::msg::SolidPrimitive shape;
+    shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
+    shape.dimensions = {opt.stem_height, opt.stem_diameter / 2.0};
+    Eigen::Vector3d pos(stem_axis_x, stem_axis_y, bottom_z + opt.stem_height / 2.0);
+    keepout_stem = make_obj("keepout_stem", shape, pos, identity_quat(),
+                            global_frame, stamp);
+  }
+  if (use_disk) {
+    // Top face on the disk top face (center.z), going down by disk_height.
+    shape_msgs::msg::SolidPrimitive shape;
+    shape.type = shape_msgs::msg::SolidPrimitive::CYLINDER;
+    shape.dimensions = {opt.disk_height, opt.disk_diameter / 2.0};
+    Eigen::Vector3d pos(center.x(), center.y(), center.z() - opt.disk_height / 2.0);
+    keepout_disk = make_obj("keepout_disk", shape, pos, identity_quat(),
+                            global_frame, stamp);
+  }
+  if (use_support) {
+    // Block on top of the stem: 0.12 m along x, 0.18 m along y, from 0.054 m
+    // to 0.007 m below `center`. The box top is cut at the disk top face, so
+    // it never sticks out above the plane of the artefact.
+    const double m = opt.support_margin;
+    const double bottom_z = center.z() - 0.054 - m;
+    double top_z = center.z() - 0.007 + m;
+    if (top_z > center.z()) {
+      top_z = center.z();
+    }
+    shape_msgs::msg::SolidPrimitive shape;
+    shape.type = shape_msgs::msg::SolidPrimitive::BOX;
+    shape.dimensions = {0.12 + 2.0 * m, 0.18 + 2.0 * m, top_z - bottom_z};
+    Eigen::Vector3d pos(stem_axis_x, stem_axis_y, (bottom_z + top_z) / 2.0);
+    keepout_support = make_obj("keepout_support", shape, pos, identity_quat(),
+                               global_frame, stamp);
   }
 
   if (use_table_margin) {
@@ -376,8 +421,11 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
   scene.world.collision_objects.push_back(table);
   scene.world.collision_objects.push_back(target);
   scene.world.collision_objects.push_back(artefact);
-  if (use_platform_margin) scene.world.collision_objects.push_back(platform_margin);
   if (use_table_margin)    scene.world.collision_objects.push_back(table_margin);
+  if (use_stem_base)       scene.world.collision_objects.push_back(keepout_stem_base);
+  if (use_stem)            scene.world.collision_objects.push_back(keepout_stem);
+  if (use_disk)            scene.world.collision_objects.push_back(keepout_disk);
+  if (use_support)         scene.world.collision_objects.push_back(keepout_support);
 
   if (platform_sim) {
     scene.world.collision_objects.push_back(support);
@@ -407,18 +455,20 @@ build_scan_scene(const std::string &global_frame, const Eigen::Vector3d &center,
     scene.object_colors.push_back(make_color("platform", 0.8f, 0.8f, 0.85f));
   }
   // Giallo semitrasparente: si legge come "margine", non come ostacolo.
-  if (use_platform_margin) {
-    scene.object_colors.push_back(make_color("platform_margin", 1.0f, 0.85f, 0.0f, 0.35f));
-  }
   if (use_table_margin) {
     scene.object_colors.push_back(make_color("table_margin", 1.0f, 0.85f, 0.0f, 0.35f));
   }
-  // Muri grigi semitrasparenti, per non nascondere il robot in RViz.
-  if (use_leftwall)  scene.object_colors.push_back(make_color("leftwall",  0.6f, 0.6f, 0.6f, 0.4f));
-  if (use_rightwall) scene.object_colors.push_back(make_color("rightwall", 0.6f, 0.6f, 0.6f, 0.4f));
-  if (use_backwall)  scene.object_colors.push_back(make_color("backwall",  0.6f, 0.6f, 0.6f, 0.4f));
-  if (use_ceiling)   scene.object_colors.push_back(make_color("ceiling",   0.6f, 0.6f, 0.6f, 0.25f));
-  if (use_mountwall) scene.object_colors.push_back(make_color("mountwall", 0.6f, 0.6f, 0.6f, 0.4f));
+  // Light blue, very transparent: the platform stays visible inside.
+  if (use_stem_base) scene.object_colors.push_back(make_color("keepout_stem_base", 0.4f, 0.7f, 1.0f, 0.2f));
+  if (use_stem)      scene.object_colors.push_back(make_color("keepout_stem",      0.4f, 0.7f, 1.0f, 0.2f));
+  if (use_disk)      scene.object_colors.push_back(make_color("keepout_disk",      0.4f, 0.7f, 1.0f, 0.2f));
+  if (use_support)   scene.object_colors.push_back(make_color("keepout_support",   0.4f, 0.7f, 1.0f, 0.2f));
+  // Muri grigi quasi trasparenti, per non nascondere il robot in RViz.
+  if (use_leftwall)  scene.object_colors.push_back(make_color("leftwall",  0.6f, 0.6f, 0.6f, 0.1f));
+  if (use_rightwall) scene.object_colors.push_back(make_color("rightwall", 0.6f, 0.6f, 0.6f, 0.1f));
+  if (use_backwall)  scene.object_colors.push_back(make_color("backwall",  0.6f, 0.6f, 0.6f, 0.1f));
+  if (use_ceiling)   scene.object_colors.push_back(make_color("ceiling",   0.6f, 0.6f, 0.6f, 0.1f));
+  if (use_mountwall) scene.object_colors.push_back(make_color("mountwall", 0.6f, 0.6f, 0.6f, 0.1f));
 
   return scene;
 }

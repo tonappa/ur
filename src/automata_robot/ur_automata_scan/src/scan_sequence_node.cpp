@@ -285,7 +285,8 @@ static bool is_scene_occluding(
   std::string & hit_object)
 {
   static const std::set<std::string> ignored_objects = {
-    "support_center", "artefact", "platform_margin", "table_margin"};
+    "support_center", "artefact", "table_margin",
+    "keepout_stem_base", "keepout_stem", "keepout_disk", "keepout_support"};
   const double ignore_near_center = 0.03;   // m
 
   const Eigen::Vector3d seg = center - from;

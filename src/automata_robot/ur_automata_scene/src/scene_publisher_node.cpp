@@ -32,8 +32,20 @@ public:
     declare_parameter<std::string>("platform_mesh", "disk.stl");
 
     // Parameters: keep-out di margine in metri (0 = nessun oggetto)
-    declare_parameter<double>("platform_margin", 0.0);
     declare_parameter<double>("table_margin", 0.0);
+
+    // Parameters: keep-out cylinders around the real platform (meters)
+    declare_parameter<bool>("keepout_stem_base_enabled", false);
+    declare_parameter<double>("keepout_stem_base_diameter", 0.14);
+    declare_parameter<double>("keepout_stem_base_height", 0.10);
+    declare_parameter<bool>("keepout_stem_enabled", false);
+    declare_parameter<double>("keepout_stem_diameter", 0.08);
+    declare_parameter<double>("keepout_stem_height", 0.30);
+    declare_parameter<bool>("keepout_disk_enabled", false);
+    declare_parameter<double>("keepout_disk_diameter", 0.36);
+    declare_parameter<double>("keepout_disk_height", 0.01);
+    declare_parameter<bool>("keepout_support_enabled", false);
+    declare_parameter<double>("keepout_support_margin", 0.01);
 
     // Parameters: muri della cella in metri nel frame globale (0 = nessun muro)
     declare_parameter<double>("wall_back_y", 0.0);
@@ -66,8 +78,18 @@ public:
     ur_automata_scene::SceneOptions opt;
     opt.platform_sim    = get_parameter("platform_sim").as_bool();
     opt.platform_mesh   = get_parameter("platform_mesh").as_string();
-    opt.platform_margin = get_parameter("platform_margin").as_double();
     opt.table_margin    = get_parameter("table_margin").as_double();
+    opt.stem_base_enabled  = get_parameter("keepout_stem_base_enabled").as_bool();
+    opt.stem_base_diameter = get_parameter("keepout_stem_base_diameter").as_double();
+    opt.stem_base_height   = get_parameter("keepout_stem_base_height").as_double();
+    opt.stem_enabled       = get_parameter("keepout_stem_enabled").as_bool();
+    opt.stem_diameter      = get_parameter("keepout_stem_diameter").as_double();
+    opt.stem_height        = get_parameter("keepout_stem_height").as_double();
+    opt.disk_enabled       = get_parameter("keepout_disk_enabled").as_bool();
+    opt.disk_diameter      = get_parameter("keepout_disk_diameter").as_double();
+    opt.disk_height        = get_parameter("keepout_disk_height").as_double();
+    opt.support_enabled    = get_parameter("keepout_support_enabled").as_bool();
+    opt.support_margin     = get_parameter("keepout_support_margin").as_double();
     opt.wall_back_y     = get_parameter("wall_back_y").as_double();
     opt.wall_left_x     = get_parameter("wall_left_x").as_double();
     opt.wall_right_x    = get_parameter("wall_right_x").as_double();
@@ -105,14 +127,25 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "Applying scene: %zu objects in frame '%s', center [%.3f, %.3f, %.3f], "
-      "margins platform %.3f / table %.3f m, walls back %.2f left %.2f right %.2f top %.2f, "
+      "table margin %.3f m, walls back %.2f left %.2f right %.2f top %.2f, "
       "base [%.3f, %.3f, %.3f] rpy [%.3f, %.3f, %.3f]%s",
       scene.world.collision_objects.size(), global_frame.c_str(),
-      center.x(), center.y(), center.z(), opt.platform_margin, opt.table_margin,
+      center.x(), center.y(), center.z(), opt.table_margin,
       opt.wall_back_y, opt.wall_left_x, opt.wall_right_x, opt.wall_top_z,
       opt.base_xyz.x(), opt.base_xyz.y(), opt.base_xyz.z(),
       opt.base_rpy.x(), opt.base_rpy.y(), opt.base_rpy.z(),
       (opt.base_xyz.isZero() && opt.base_rpy.isZero()) ? "" : " (parete di montaggio)");
+
+    if (!opt.platform_sim) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Keep-out: stem_base %s (d %.3f h %.3f) | stem %s (d %.3f h %.3f) | disk %s (d %.3f h %.3f) | "
+        "support %s (margin %.3f)",
+        opt.stem_base_enabled ? "ON" : "off", opt.stem_base_diameter, opt.stem_base_height,
+        opt.stem_enabled ? "ON" : "off", opt.stem_diameter, opt.stem_height,
+        opt.disk_enabled ? "ON" : "off", opt.disk_diameter, opt.disk_height,
+        opt.support_enabled ? "ON" : "off", opt.support_margin);
+    }
 
     // ---------------- Call the service and wait for the response ----------------
     auto future = client_->async_send_request(request);

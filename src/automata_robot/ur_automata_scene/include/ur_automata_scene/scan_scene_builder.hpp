@@ -19,10 +19,24 @@ struct SceneOptions {
   std::string platform_mesh = "disk.stl";
 
   // Keep-out di margine, in metri (0 = nessun oggetto):
-  //   platform_margin -> cilindro attorno al disco (raggio +m, spessore +2m)
   //   table_margin    -> lastra alta m sul tavolo, sotto la sfera
-  double platform_margin = 0.0;
   double table_margin = 0.0;
+
+  // Keep-out cylinders around the real platform (only with platform_sim false),
+  // in meters: lower part of the stem (on the top of the base), stem (on top
+  // of the previous one) and artefact disk (top face at `center`).
+  bool   stem_base_enabled = false;
+  double stem_base_diameter = 0.14;
+  double stem_base_height = 0.10;
+  bool   stem_enabled = false;
+  double stem_diameter = 0.08;
+  double stem_height = 0.30;
+  bool   disk_enabled = false;
+  double disk_diameter = 0.36;
+  double disk_height = 0.01;
+  // Box around the block on top of the stem: block size + margin on every side.
+  bool   support_enabled = false;
+  double support_margin = 0.01;
 
   // Muri della cella, in metri nel frame globale (0 = nessun muro):
   //   wall_back_y  -> parete dietro il robot, a y negativa
