@@ -18,6 +18,7 @@ def generate_launch_description():
     cfg = _load_yaml("ur_automata_bringup", "config", "automata_config.yaml")
     p = cfg["planning"]
     s = cfg["scan"]
+    h = cfg["scan3d"]
 
     # Same IK setup as scan_sequence.launch.py: TRAC-IK in Speed mode for the
     # enumeration (move_group keeps its own kinematics.yaml).
@@ -88,6 +89,13 @@ def generate_launch_description():
             "tsp_check_neighbours": ParameterValue(LaunchConfiguration("tsp_check_neighbours"), value_type=int),
             "start_tolerance_rad": ParameterValue(LaunchConfiguration("start_tolerance_rad"), value_type=float),
             "speed": ParameterValue(LaunchConfiguration("speed"), value_type=float),
+            # Photo handshake of mode:=execute (scan3d: in automata_config.yaml)
+            "start_topic":    h["start_topic"],
+            "waypoint_topic": h["waypoint_topic"],
+            "capture_topic":  h["capture_topic"],
+            "next_topic":     h["next_topic"],
+            "done_topic":     h["done_topic"],
+            "wait_for_next":  h["wait_for_next"],
             },
         ],
     )

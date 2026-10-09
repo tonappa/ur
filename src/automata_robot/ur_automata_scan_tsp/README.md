@@ -116,16 +116,41 @@ Other orders, for comparison:
 ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=plan order:=gtsp plan_file:=/home/ros/ur/recordings/scan_gtsp.yaml
 ```
 
-**Load and execute** (starts paused). If the robot is farther than
-`start_tolerance_rad` from the start state of the plan, after `/start` it first
-goes there with a planned motion (Pilz PTP, then OMPL RRTConnect), not counted
-in the execution time:
+**Load and execute.** After the checks the node waits for an object name on
+the start topic. If the robot is farther than `start_tolerance_rad` from the
+start state of the plan, it first goes there with a planned motion (Pilz PTP,
+then OMPL RRTConnect), not counted in the execution time:
 
 ```bash
 ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute
-ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}
-ros2 service call /scan_tsp_node/pause std_srvs/srv/Trigger {}
+ros2 topic pub --once /scan3d/start std_msgs/msg/String "{data: object_1}"
+ros2 service call /scan_tsp_node/pause std_srvs/srv/Trigger {}   # stops after the current motion
+ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}   # resumes
 ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute speed:=0.5   # half speed, same path
+```
+
+**Photo handshake.** On every waypoint the node publishes, as `std_msgs/String`:
+
+| topic (default) | direction | payload |
+|---|---|---|
+| `/scan3d/start` | in | object name, e.g. `object_3`: starts a scan |
+| `/scan3d/waypoint` | out | `wp_5; position: [x, y, z]; orientation: [qx, qy, qz, qw]` |
+| `/scan3d/capture` | out | `image_5`: take the photo |
+| `/scan3d/next` | in | any message: photo taken, go on |
+| `/scan3d/done` | out | `scan3D object_3` at the end (`scan3D object_3 ERROR` if interrupted) |
+
+The pose is the one of `ee_automata_tcp` in the `world` frame (m, quaternion).
+The number `i` goes from 1 at the north pole to N at the south pole, ring by
+ring, counterclockwise from +X inside a ring, counting only the waypoints of
+the plan (77 with the current one). The robot visits them in the TSP order, so
+the numbers come out of order. After `/scan3d/done` the node waits for the
+next object. Topic names and `wait_for_next` (false = do not wait for
+`/scan3d/next`, for tests without the camera) are in the `scan3d:` section of
+`automata_config.yaml`. To answer by hand:
+
+```bash
+ros2 topic echo /scan3d/capture
+ros2 topic pub --once /scan3d/next std_msgs/msg/String "{data: ok}"
 ```
 
 This method and `scan_replay_node` use separate files (`recordings/scan_tsp.yaml`

@@ -84,11 +84,14 @@ ros2 service call /scan_replay_node/pause std_srvs/srv/Trigger {}   # optional: 
 
 **Work session with the second method** (TSP planner, shorter scan; §9.4).
 From any pose: if the robot is not in the start state of the plan (`home`), it
-goes there first. Terminal 3, then the service from terminal 4:
+goes there first. Terminal 3, then the object name from terminal 4. On every
+waypoint it waits for a message on `/scan3d/next` (photo handshake, see the
+[package README](src/automata_robot/ur_automata_scan_tsp/README.md); set
+`scan3d.wait_for_next: false` to run without the camera):
 
 ```bash
 ros2 launch ur_automata_scan_tsp scan_tsp.launch.py mode:=execute 2>&1 | tee ~/ur/log/tsp_execute.log
-ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}
+ros2 topic pub --once /scan3d/start std_msgs/msg/String "{data: object_1}"
 ```
 
 Both work sessions accept `speed:=0.5` (or any value up to 1.0) to move slower
@@ -280,7 +283,7 @@ Which package to rebuild after a change:
 ## 5. The single config file
 
 `src/automata_robot/ur_automata_bringup/config/automata_config.yaml` is where
-*every* parameter lives: bring-up, MoveIt, scene and scan all read it. Three
+*every* parameter lives: bring-up, MoveIt, scene and scan all read it. Four
 sections:
 
 ```yaml
@@ -311,6 +314,11 @@ scan:
   platform_sim: false
   platform_mesh: platform02.stl
   ...
+
+scan3d:                       # photo handshake of the TSP execute (topic names)
+  start_topic: /scan3d/start
+  ...
+  wait_for_next: true
 ```
 
 Notes on `planning`:
@@ -777,7 +785,7 @@ with no new calibration.
 | calibration | `scan_sequence.launch.py record:=true` + `/start`: the robot moves | `scan_tsp.launch.py mode:=plan plan_file:=<new file>`: the robot does not move |
 | calibration time | ~1.5 min of planning, then the scan (177 s in the last run) | 6–7 min (356.5 s and 410.1 s in two runs) |
 | saved file | `recordings/scan_sequence.yaml` | `recordings/scan_tsp.yaml` |
-| work session | `scan_replay.launch.py` + `/scan_replay_node/start` | `scan_tsp.launch.py mode:=execute` + `/scan_tsp_node/start` |
+| work session | `scan_replay.launch.py` + `/scan_replay_node/start` | `scan_tsp.launch.py mode:=execute` + object name on `/scan3d/start` |
 | motion time | 115–129 s | 91–96 s |
 | start pose | any: it first moves to the start of the recording | any: it first moves to the start state of the plan (`home`) |
 | slower | `speed:=0.5` | `speed:=0.5` |

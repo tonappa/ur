@@ -101,7 +101,7 @@ scan:
     left_x: -0.52
     right_x: 0.76
     top_z: 0.97     # ceiling height; must stay above the highest waypoint (center.z + radius) plus the end effector
-  radius: 0.30               # raggio della sfera di waypoint, in metri
+  radius: 0.25               # raggio della sfera di waypoint, in metri
   hemisphere: full          # upper | lower | full  (full = sup prima, poi inf)
   direction: latitudinal   # latitudinal | longitudinal
 
@@ -234,3 +234,15 @@ scan:
   # play it back without planning. Record again after changing anything in the
   # cell (center, radius, walls, platform, end effector, TCP, base pose).
   recording_file: /home/ros/ur/recordings/scan_sequence.yaml
+
+# Photo handshake of scan_tsp_node mode:=execute (std_msgs/String topics, plain
+# text, to be bridged to MQTT). Waypoints are numbered 1..N from the north pole
+# to the south pole, ring by ring (counterclockwise from +X of global_frame),
+# counting only the waypoints of the plan.
+scan3d:
+  start_topic:    /scan3d/start      # in:  object name, e.g. "object_3" -> starts a scan
+  waypoint_topic: /scan3d/waypoint   # out: "wp_5; position: [x, y, z]; orientation: [qx, qy, qz, qw]"
+  capture_topic:  /scan3d/capture    # out: "image_5" -> take the photo
+  next_topic:     /scan3d/next       # in:  any message -> photo taken, go to the next waypoint
+  done_topic:     /scan3d/done       # out: "scan3D object_3" at the end of the scan
+  wait_for_next:  true               # false: do not wait for /next (tests without the camera)

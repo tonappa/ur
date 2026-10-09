@@ -16,10 +16,17 @@
 //     5. refinement: the measured durations replace the estimates and 2-4 are
 //        repeated; the best measured plan is saved to plan_file.
 //   mode:=execute  Loads plan_file, checks it against the current cell, then
-//     executes it (starts paused, like scan_replay_node). If the robot is not
-//     in the start state of the plan, it first goes there with a planned motion:
-//       ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}
-//       ros2 service call /scan_tsp_node/pause std_srvs/srv/Trigger {}
+//     waits for an object name on start_topic and executes the plan. If the
+//     robot is not in the start state of the plan, it first goes there with a
+//     planned motion. On every waypoint it publishes the camera pose
+//     ("wp_5; position: [...]; orientation: [...]") and a photo request
+//     ("image_5"), then waits for any message on next_topic. At the end it
+//     publishes "scan3D <object>" and waits for the next object (topics in the
+//     scan3d: section of automata_config.yaml):
+//       ros2 topic pub --once /scan3d/start std_msgs/msg/String "{data: object_1}"
+//       ros2 topic pub --once /scan3d/next std_msgs/msg/String "{data: ok}"
+//       ros2 service call /scan_tsp_node/pause std_srvs/srv/Trigger {}   (stops after the current motion)
+//       ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}   (resumes)
 //
 // Costs are durations (s). The estimate of a segment is the Pilz PTP time on
 // the straight joint line (see ptp_time); the orders found are heuristic
@@ -35,6 +42,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -50,6 +58,7 @@
 #include <moveit/robot_state/robot_state.h>
 #include <moveit_msgs/msg/robot_trajectory.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 
 #include "ur_automata_scan/frustum_markers.hpp"
@@ -63,7 +72,11 @@
 
 using MoveGroup = moveit::planning_interface::MoveGroupInterface;
 
-static std::atomic<bool> g_paused{true};
+static std::atomic<bool> g_paused{false};          // /pause sets it, /start clears it
+static std::atomic<bool> g_scan_running{false};    // a scan is being executed
+static std::atomic<bool> g_next_received{false};   // a message arrived on next_topic
+static std::mutex g_start_mutex;
+static std::string g_start_object;                 // object name from start_topic, "" = none
 
 static double seconds_since(std::chrono::steady_clock::time_point t0)
 {
@@ -223,7 +236,7 @@ int main(int argc, char ** argv)
     [](const std::shared_ptr<TriggerSrv::Request>, std::shared_ptr<TriggerSrv::Response> res) {
       g_paused = false;
       res->success = true;
-      res->message = "execution started/resumed";
+      res->message = "execution resumed";
     });
   auto pause_srv = node->create_service<TriggerSrv>(
     "~/pause",
@@ -296,6 +309,13 @@ int main(int argc, char ** argv)
   // execute: speed relative to the plan, 1.0 = as planned, 0.5 = half speed.
   // Only slower: values above 1.0 are refused.
   node->declare_parameter<double>     ("speed",                1.0);
+  // execute: topics of the photo handshake (scan3d: in automata_config.yaml).
+  node->declare_parameter<std::string>("start_topic",          "/scan3d/start");
+  node->declare_parameter<std::string>("waypoint_topic",       "/scan3d/waypoint");
+  node->declare_parameter<std::string>("capture_topic",        "/scan3d/capture");
+  node->declare_parameter<std::string>("next_topic",           "/scan3d/next");
+  node->declare_parameter<std::string>("done_topic",           "/scan3d/done");
+  node->declare_parameter<bool>       ("wait_for_next",        true);
 
   const std::string global_frame    = node->get_parameter("global_frame").as_string();
   const std::string planning_group  = node->get_parameter("planning_group").as_string();
@@ -323,6 +343,12 @@ int main(int argc, char ** argv)
   const double      blocked_penalty_s = node->get_parameter("blocked_penalty_s").as_double();
   const int         tsp_check_neighbours = node->get_parameter("tsp_check_neighbours").as_int();
   const double      start_tolerance = node->get_parameter("start_tolerance_rad").as_double();
+  const std::string start_topic     = node->get_parameter("start_topic").as_string();
+  const std::string waypoint_topic  = node->get_parameter("waypoint_topic").as_string();
+  const std::string capture_topic   = node->get_parameter("capture_topic").as_string();
+  const std::string next_topic      = node->get_parameter("next_topic").as_string();
+  const std::string done_topic      = node->get_parameter("done_topic").as_string();
+  const bool        wait_for_next   = node->get_parameter("wait_for_next").as_bool();
 
   auto fail = [&](const std::string & message) {
     std::fprintf(stderr, "%s\n", message.c_str());
@@ -520,20 +546,9 @@ int main(int argc, char ** argv)
         reasons.push_back(buf);
       }
     }
-    // Start state: if the robot is not there, it goes there after /start.
-    bool move_to_start = false;
+    // Start state: if the robot is not there, every scan first goes there.
     if (d.start_joints.size() != current_joints.size()) {
       reasons.push_back("stato iniziale del piano assente o con un numero di giunti diverso");
-    } else {
-      double worst = 0.0;
-      for (size_t k = 0; k < current_joints.size(); ++k) {
-        worst = std::max(worst, std::abs(d.start_joints[k] - current_joints[k]));
-      }
-      if (worst > start_tolerance) {
-        move_to_start = true;
-        std::printf("Robot a %.3f rad dallo stato iniziale del piano (tolleranza %.3f): "
-                    "ci andra' dopo /start.\n", worst, start_tolerance);
-      }
     }
     // Scene objects.
     if (!scene) {
@@ -612,85 +627,200 @@ int main(int argc, char ** argv)
     for (const RecordedSegment & seg : rec.segments) motion_s += seg.points.back().time / speed;
     std::printf("Controlli superati. Caricamento %.3f s, controlli %.3f s. Movimenti del piano: %.1f s (speed %.2f)\n",
                 load_s, check_s, motion_s, speed);
+
+    // --- Photo numbers: 1 at the north pole ... N at the south pole ---
+    // The waypoints of the plan are sorted by height (higher ring first) and,
+    // inside a ring, by angle around the scan center (counterclockwise from +X).
+    std::vector<int> visited;
+    for (const RecordedSegment & seg : rec.segments) {
+      if (seg.waypoint >= 0) visited.push_back(seg.waypoint);
+    }
+    auto azimuth = [&](int w) {
+      double a = std::atan2(d.waypoints[w][1] - cfg.center.y(), d.waypoints[w][0] - cfg.center.x());
+      if (a < 0.0) a += 2.0 * M_PI;
+      return a;
+    };
+    std::sort(visited.begin(), visited.end(), [&](int a, int b) {
+      const double za = d.waypoints[a][2];
+      const double zb = d.waypoints[b][2];
+      if (std::abs(za - zb) > 0.001) return za > zb;   // different rings: higher first
+      return azimuth(a) < azimuth(b);
+    });
+    std::map<int, int> photo_number;   // waypoint index -> photo number (1..N)
+    for (size_t k = 0; k < visited.size(); ++k) photo_number[visited[k]] = static_cast<int>(k) + 1;
+    std::printf("Foto numerate da 1 (polo nord) a %zu (polo sud).\n", visited.size());
+
+    // --- Topics of the photo handshake (scan3d: in automata_config.yaml) ---
+    auto waypoint_pub = node->create_publisher<std_msgs::msg::String>(waypoint_topic, 10);
+    auto capture_pub  = node->create_publisher<std_msgs::msg::String>(capture_topic, 10);
+    auto done_pub     = node->create_publisher<std_msgs::msg::String>(done_topic, 10);
+    auto start_sub = node->create_subscription<std_msgs::msg::String>(
+      start_topic, 10, [](const std_msgs::msg::String::SharedPtr msg) {
+        if (g_scan_running.load()) {
+          std::printf("Start '%s' ignorato: scansione in corso.\n", msg->data.c_str());
+          std::fflush(stdout);
+          return;
+        }
+        std::lock_guard<std::mutex> lock(g_start_mutex);
+        g_start_object = msg->data;
+      });
+    auto next_sub = node->create_subscription<std_msgs::msg::String>(
+      next_topic, 10, [](const std_msgs::msg::String::SharedPtr) { g_next_received = true; });
+
+    std::printf("Topic: start %s | waypoint %s | capture %s | next %s | done %s | wait_for_next %s\n",
+                start_topic.c_str(), waypoint_topic.c_str(), capture_topic.c_str(), next_topic.c_str(),
+                done_topic.c_str(), wait_for_next ? "true" : "false");
+
     // Gray camera frustums on the waypoints of the plan.
     visualization_msgs::msg::MarkerArray markers = make_frustum_markers(rec, global_frame);
     publish_first_frustums(markers_pub, markers);
 
-    std::printf("In pausa: ros2 service call /scan_tsp_node/start std_srvs/srv/Trigger {}\n");
-    std::fflush(stdout);
+    // One scan per object name received on start_topic, until Ctrl+C.
+    while (rclcpp::ok()) {
+      std::printf("\nIn attesa dell'oggetto su %s, es.:\n"
+                  "  ros2 topic pub --once %s std_msgs/msg/String \"{data: object_1}\"\n",
+                  start_topic.c_str(), start_topic.c_str());
+      std::fflush(stdout);
+      std::string object_name;
+      while (rclcpp::ok() && object_name.empty()) {
+        {
+          std::lock_guard<std::mutex> lock(g_start_mutex);
+          object_name = g_start_object;
+          g_start_object.clear();
+        }
+        if (object_name.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      if (!rclcpp::ok()) break;
+      g_scan_running = true;
+      std::printf("\n=== Scansione di '%s' ===\n", object_name.c_str());
+      std::fflush(stdout);
 
-    while (g_paused.load() && rclcpp::ok()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    if (!rclcpp::ok()) return shutdown(1);
+      // Every frustum gray again.
+      markers = make_frustum_markers(rec, global_frame);
+      markers_pub->publish(markers);
 
-    // Planned motion to the start state of the plan (as scan_replay_node),
-    // slowed like the rest. Not counted in the execution time.
-    if (move_to_start) {
-      move_group.setMaxVelocityScalingFactor(scaling * speed);
-      move_group.setMaxAccelerationScalingFactor(scaling * speed);
-      move_group.setJointValueTarget(d.start_joints);
-      MoveGroup::Plan start_plan;
-      bool start_ok = false;
-      const std::string pipelines[2][2] = {{"pilz_industrial_motion_planner", "PTP"},
-                                           {"ompl", "RRTConnectkConfigDefault"}};
-      for (const auto & pipeline : pipelines) {
-        move_group.setPlanningPipelineId(pipeline[0]);
-        move_group.setPlannerId(pipeline[1]);
-        if (move_group.plan(start_plan) == moveit::core::MoveItErrorCode::SUCCESS) {
-          start_ok = move_group.execute(start_plan) == moveit::core::MoveItErrorCode::SUCCESS;
+      // If the robot is not in the start state of the plan, it first goes there
+      // with a planned motion, slowed like the rest. Not counted in the time.
+      bool move_to_start = false;
+      moveit::core::RobotStatePtr now_ptr = move_group.getCurrentState(5.0);
+      if (now_ptr) {
+        std::vector<double> now_joints;
+        now_ptr->copyJointGroupPositions(jmg, now_joints);
+        for (size_t k = 0; k < now_joints.size() && k < d.start_joints.size(); ++k) {
+          if (std::abs(d.start_joints[k] - now_joints[k]) > start_tolerance) move_to_start = true;
+        }
+      } else {
+        move_to_start = true;   // state unknown: let the planned motion start from wherever it is
+      }
+      bool completed = true;
+      if (move_to_start) {
+        std::printf("Vado nello stato iniziale del piano...\n");
+        std::fflush(stdout);
+        move_group.setMaxVelocityScalingFactor(scaling * speed);
+        move_group.setMaxAccelerationScalingFactor(scaling * speed);
+        move_group.setStartStateToCurrentState();
+        move_group.setJointValueTarget(d.start_joints);
+        MoveGroup::Plan start_plan;
+        bool start_ok = false;
+        const std::string pipelines[2][2] = {{"pilz_industrial_motion_planner", "PTP"},
+                                             {"ompl", "RRTConnectkConfigDefault"}};
+        for (const auto & pipeline : pipelines) {
+          move_group.setPlanningPipelineId(pipeline[0]);
+          move_group.setPlannerId(pipeline[1]);
+          if (move_group.plan(start_plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+            start_ok = move_group.execute(start_plan) == moveit::core::MoveItErrorCode::SUCCESS;
+            break;
+          }
+        }
+        if (start_ok) {
+          std::printf("Robot nello stato iniziale del piano.\n");
+        } else {
+          std::fprintf(stderr, "Impossibile portare il robot nello stato iniziale del piano.\n");
+          completed = false;
+        }
+        std::fflush(stdout);
+      }
+
+      // The execution time starts after the motion to the start state.
+      const auto exec_t0 = std::chrono::steady_clock::now();
+      double photo_wait_s = 0.0;
+      int waypoints_done = 0;
+      for (size_t k = 0; completed && k < rec.segments.size(); ++k) {
+        while (g_paused.load() && rclcpp::ok()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (!rclcpp::ok()) {
+          completed = false;
           break;
         }
-      }
-      if (!start_ok) {
-        std::fprintf(stderr, "Impossibile portare il robot nello stato iniziale del piano.\n");
-        return shutdown(1);
-      }
-      std::printf("Robot nello stato iniziale del piano.\n");
-      std::fflush(stdout);
-    }
+        const RecordedSegment seg = scale_segment_speed(rec.segments[k], speed);
+        moveit_msgs::msg::RobotTrajectory traj;
+        traj.joint_trajectory.joint_names = seg.joint_names;
+        for (const RecordedPoint & p : seg.points) {
+          trajectory_msgs::msg::JointTrajectoryPoint point;
+          point.positions       = p.positions;
+          point.velocities      = p.velocities;
+          point.accelerations   = p.accelerations;
+          point.time_from_start = rclcpp::Duration::from_seconds(p.time);
+          traj.joint_trajectory.points.push_back(point);
+        }
+        if (move_group.execute(traj) != moveit::core::MoveItErrorCode::SUCCESS) {
+          std::fprintf(stderr, "Movimento %zu/%zu ('%s') non eseguito: esecuzione interrotta.\n",
+                       k + 1, rec.segments.size(), seg.label.c_str());
+          completed = false;
+          break;
+        }
+        std::printf("  %3zu/%zu  %-14s  (%.1f s)\n", k + 1, rec.segments.size(), seg.label.c_str(),
+                    seconds_since(exec_t0));
+        if (seg.waypoint >= 0) {
+          ++waypoints_done;
+          set_frustum_reached(markers, k);
+          markers_pub->publish(markers);
+          const int n = photo_number[seg.waypoint];
+          const std::vector<double> & c = seg.camera_pose;   // x y z qx qy qz qw, global_frame
 
-    // The execution time starts after /start and the motion to the start state.
-    const auto exec_t0 = std::chrono::steady_clock::now();
-    int waypoints_done = 0;
-    bool completed = true;
-    for (size_t k = 0; k < rec.segments.size(); ++k) {
-      while (g_paused.load() && rclcpp::ok()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      if (!rclcpp::ok()) {
-        completed = false;
-        break;
+          // Camera pose of this waypoint.
+          char text[256];
+          std_msgs::msg::String msg;
+          std::snprintf(text, sizeof(text), "wp_%d; position: [%.4f, %.4f, %.4f]; orientation: [%.5f, %.5f, %.5f, %.5f]",
+                        n, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
+          msg.data = text;
+          waypoint_pub->publish(msg);
+          std::printf("        -> %s\n", text);
+
+          // Photo request. The flag is cleared first, so an old "next" does not count.
+          g_next_received = false;
+          msg.data = "image_" + std::to_string(n);
+          capture_pub->publish(msg);
+          std::printf("        -> %s (foto %d/%zu)\n", msg.data.c_str(), waypoints_done, visited.size());
+          std::fflush(stdout);
+
+          if (wait_for_next) {
+            std::printf("        attendo next su %s ...\n", next_topic.c_str());
+            std::fflush(stdout);
+            const auto wait_t0 = std::chrono::steady_clock::now();
+            while (!g_next_received.load() && rclcpp::ok()) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            const double waited = seconds_since(wait_t0);
+            photo_wait_s += waited;
+            std::printf("        next ricevuto (%.1f s)\n", waited);
+          }
+        }
+        std::fflush(stdout);
       }
-      const RecordedSegment seg = scale_segment_speed(rec.segments[k], speed);
-      moveit_msgs::msg::RobotTrajectory traj;
-      traj.joint_trajectory.joint_names = seg.joint_names;
-      for (const RecordedPoint & p : seg.points) {
-        trajectory_msgs::msg::JointTrajectoryPoint point;
-        point.positions       = p.positions;
-        point.velocities      = p.velocities;
-        point.accelerations   = p.accelerations;
-        point.time_from_start = rclcpp::Duration::from_seconds(p.time);
-        traj.joint_trajectory.points.push_back(point);
-      }
-      if (move_group.execute(traj) != moveit::core::MoveItErrorCode::SUCCESS) {
-        std::fprintf(stderr, "Movimento %zu/%zu ('%s') non eseguito: esecuzione interrotta.\n",
-                     k + 1, rec.segments.size(), seg.label.c_str());
-        completed = false;
-        break;
-      }
-      if (seg.waypoint >= 0) {
-        ++waypoints_done;
-        // The camera is on waypoint seg.waypoint: this is where the photo will be taken.
-        set_frustum_reached(markers, k);
-        markers_pub->publish(markers);
-      }
-      std::printf("  %3zu/%zu  %-14s  (%.1f s)\n", k + 1, rec.segments.size(), seg.label.c_str(),
-                  seconds_since(exec_t0));
+
+      std_msgs::msg::String done_msg;
+      done_msg.data = "scan3D " + object_name;
+      if (!completed) done_msg.data += " ERROR";
+      done_pub->publish(done_msg);
+      const double total_s = seconds_since(exec_t0);
+      std::printf("\nScansione di '%s' %s: %d/%zu foto in %.1f s (movimento %.1f s + attesa foto %.1f s) "
+                  "-> %s\n",
+                  object_name.c_str(), completed ? "completata" : "INTERROTTA", waypoints_done, visited.size(),
+                  total_s, total_s - photo_wait_s, photo_wait_s, done_msg.data.c_str());
       std::fflush(stdout);
+      g_scan_running = false;
     }
-    std::printf("\nEsecuzione %s: %d waypoint in %.1f s (movimenti del piano %.1f s) | "
-                "riuso: caricamento %.3f s + controlli %.3f s\n",
-                completed ? "completata" : "INTERROTTA", waypoints_done, seconds_since(exec_t0),
-                motion_s, load_s, check_s);
-    std::fflush(stdout);
-    return shutdown(completed ? 0 : 1);
+    return shutdown(0);
   }
 
   // ==========================================================================

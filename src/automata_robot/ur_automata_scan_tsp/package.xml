@@ -24,6 +24,7 @@
   <depend>moveit_ros_planning</depend>
   <depend>moveit_msgs</depend>
   <depend>eigen3_cmake_module</depend>
+  <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>geometric_shapes</depend>
   <depend>yaml-cpp</depend>
